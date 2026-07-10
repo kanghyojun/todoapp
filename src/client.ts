@@ -1,5 +1,7 @@
 import type {
   Filter,
+  LinearRef,
+  LinearStatus,
   NewTodo,
   Priority,
   PullResult,
@@ -18,6 +20,9 @@ export interface TodoClient {
   restore(id: string): Promise<Todo>;
   linkLinear(id: string, issueRef: string): Promise<void>;
   pullLinear(): Promise<PullResult>;
+  linearStatus(): Promise<LinearStatus>;
+  setLinearKey(apiKey: string): Promise<void>;
+  openExternal(url: string): Promise<void>;
   subscribe(onChange: () => void): () => void;
 }
 
@@ -95,7 +100,8 @@ function decodeTodo(value: unknown): Todo {
     !isNullableString(value.completed_at) ||
     typeof value.created_at !== "string" ||
     typeof value.updated_at !== "string" ||
-    !isNullableString(value.deleted_at)
+    !isNullableString(value.deleted_at) ||
+    !isValidLinear(value.linear)
   ) {
     throw new ApiError("server returned an invalid todo", "invalid_response", 0);
   }
@@ -110,7 +116,27 @@ function decodeTodo(value: unknown): Todo {
     created_at: value.created_at,
     updated_at: value.updated_at,
     deleted_at: value.deleted_at,
+    linear: decodeLinear(value.linear),
   };
+}
+
+// linear 는 없거나(undefined) null 이거나 {identifier, url} 이다.
+function isValidLinear(value: unknown): boolean {
+  if (value === undefined || value === null) {
+    return true;
+  }
+  return (
+    isRecord(value) &&
+    typeof value.identifier === "string" &&
+    typeof value.url === "string"
+  );
+}
+
+function decodeLinear(value: unknown): LinearRef | null {
+  if (isRecord(value) && typeof value.identifier === "string" && typeof value.url === "string") {
+    return { identifier: value.identifier, url: value.url };
+  }
+  return null;
 }
 
 function decodeTodos(value: unknown): Todo[] {
@@ -162,6 +188,22 @@ function decodeServerStatus(value: unknown): ServerStatus {
     );
   }
   return { running: value.running, error: value.error };
+}
+
+function decodeLinearStatus(value: unknown): LinearStatus {
+  if (
+    !isRecord(value) ||
+    typeof value.configured !== "boolean" ||
+    typeof value.key_store_available !== "boolean" ||
+    typeof value.failing !== "number"
+  ) {
+    throw new ApiError("server returned an invalid Linear status", "invalid_response", 0);
+  }
+  return {
+    configured: value.configured,
+    keyStoreAvailable: value.key_store_available,
+    failing: value.failing,
+  };
 }
 
 function commandError(value: unknown): Error {
@@ -253,6 +295,22 @@ export class HttpClient implements TodoClient {
     );
   }
 
+  async linearStatus(): Promise<LinearStatus> {
+    return decodeLinearStatus(await this.request("/linear/status"));
+  }
+
+  async setLinearKey(apiKey: string): Promise<void> {
+    await this.request("/linear/key", {
+      method: "POST",
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+  }
+
+  // 브라우저 개발 모드에서는 새 탭으로 연다. Tauri 창은 opener 를 쓴다.
+  async openExternal(url: string): Promise<void> {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
   subscribe(onChange: () => void): () => void {
     const timer = window.setInterval(onChange, 2_000);
     return () => window.clearInterval(timer);
@@ -331,6 +389,18 @@ export class TauriClient implements TodoClient {
 
   async pullLinear(): Promise<PullResult> {
     return decodePullResult(await this.request("pull_linear"));
+  }
+
+  async linearStatus(): Promise<LinearStatus> {
+    return decodeLinearStatus(await this.request("linear_status"));
+  }
+
+  async setLinearKey(apiKey: string): Promise<void> {
+    await this.request("set_linear_key", { apiKey });
+  }
+
+  async openExternal(url: string): Promise<void> {
+    await this.request("open_external", { url });
   }
 
   async serverStatus(): Promise<ServerStatus> {

@@ -77,4 +77,77 @@ describe("HttpClient", () => {
     expect(body).toEqual({ priority: "high" });
     expect(JSON.stringify(body)).not.toContain('"priority":2');
   });
+
+  const respondWith = (payload: unknown) =>
+    async (): Promise<Response> =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+  it("decodes the linear link when the server sends one", async () => {
+    const client = new HttpClient(
+      "token",
+      "http://example.test/api/v1",
+      respondWith({
+        ...TODO,
+        linear: { identifier: "PI-42", url: "https://linear.app/x/issue/PI-42" },
+      }),
+    );
+    const todo = await client.get(TODO.id);
+    expect(todo.linear).toEqual({
+      identifier: "PI-42",
+      url: "https://linear.app/x/issue/PI-42",
+    });
+  });
+
+  it("treats a missing or null linear link as null", async () => {
+    const withNull = new HttpClient(
+      "token",
+      "http://example.test/api/v1",
+      respondWith({ ...TODO, linear: null }),
+    );
+    expect((await withNull.get(TODO.id)).linear).toBeNull();
+
+    const withoutField = new HttpClient(
+      "token",
+      "http://example.test/api/v1",
+      respondWith(TODO),
+    );
+    expect((await withoutField.get(TODO.id)).linear).toBeNull();
+  });
+
+  it("decodes linear status from snake_case", async () => {
+    const client = new HttpClient(
+      "token",
+      "http://example.test/api/v1",
+      respondWith({
+        configured: true,
+        key_store_available: true,
+        pending: 0,
+        failing: 2,
+        needs_choice: [],
+      }),
+    );
+    expect(await client.linearStatus()).toEqual({
+      configured: true,
+      keyStoreAvailable: true,
+      failing: 2,
+    });
+  });
+
+  it("posts the api key under the wire field name", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      if (init !== undefined) requests.push(init);
+      return new Response(null, { status: 204 });
+    };
+    const client = new HttpClient("token", "http://example.test/api/v1", fetcher);
+    await client.setLinearKey("lin_api_secret");
+    const body: unknown = JSON.parse(String(requests[0]?.body));
+    expect(body).toEqual({ api_key: "lin_api_secret" });
+  });
 });

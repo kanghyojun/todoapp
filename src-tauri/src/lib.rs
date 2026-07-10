@@ -11,7 +11,9 @@ use todo_core::{
     CreateTodoInput, DomainEvent, Error as CoreError, Priority, Status, Todo, TodoCore, TodoFilter,
     TodoId, TodoPatch, parse_due_date,
 };
-use todo_linear::{Error as LinearError, LinearService, PullSummary, SystemKeyStore};
+use todo_linear::{
+    Error as LinearError, LinearService, LinearStatus, PullSummary, SystemKeyStore,
+};
 use todo_server::{
     ServerConfig, StartupError, bind, build_router_with_linear, default_token_path,
     load_or_create_token, serve,
@@ -307,8 +309,30 @@ async fn pull_linear(state: State<'_, ShellState>) -> Result<PullSummary, Comman
 }
 
 #[tauri::command]
+async fn linear_status(state: State<'_, ShellState>) -> Result<LinearStatus, CommandError> {
+    Ok(state.linear.status().await?)
+}
+
+#[tauri::command]
+async fn set_linear_key(
+    api_key: String,
+    state: State<'_, ShellState>,
+) -> Result<(), CommandError> {
+    Ok(state.linear.set_api_key(&api_key).await?)
+}
+
+#[tauri::command]
 fn server_status(state: State<'_, ShellState>) -> Result<ServerStatus, CommandError> {
     state.server_status.get()
+}
+
+#[tauri::command]
+fn open_external(app: tauri::AppHandle, url: String) -> Result<(), CommandError> {
+    use tauri_plugin_opener::OpenerExt;
+    // opener 의 기본 권한이 http/https/mailto/tel 로 스킴을 제한한다.
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(CommandError::internal)
 }
 
 async fn initialize(app: tauri::AppHandle) -> Result<ShellState, Box<dyn StdError>> {
@@ -390,6 +414,7 @@ fn server_startup_message(error: &StartupError) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let state = tauri::async_runtime::block_on(initialize(app.handle().clone()))?;
             app.manage(state);
@@ -405,6 +430,9 @@ pub fn run() {
             restore,
             link_linear,
             pull_linear,
+            linear_status,
+            set_linear_key,
+            open_external,
             server_status
         ])
         .run(tauri::generate_context!())

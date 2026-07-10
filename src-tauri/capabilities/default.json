@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Core permissions for the todo window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "opener:default"]
 }

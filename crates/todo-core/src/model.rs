@@ -113,6 +113,16 @@ pub struct Todo {
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    /// 읽기 경로에서 조인해 채운다. 링크가 없으면 None.
+    pub linear: Option<LinearRef>,
+}
+
+/// todo 를 읽을 때 함께 실어 보내는 Linear 링크의 최소 정보.
+/// 브라우저로 열 url 과 화면에 보일 identifier 만 담는다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinearRef {
+    pub identifier: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

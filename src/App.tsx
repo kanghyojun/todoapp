@@ -8,7 +8,7 @@ import {
   type Component,
 } from "solid-js";
 import type { TodoClient } from "./client";
-import type { Filter, Priority, Status, Todo } from "./domain";
+import type { Filter, LinearStatus, Priority, Status, Todo } from "./domain";
 import {
   handleKey,
   type Action,
@@ -32,7 +32,12 @@ interface AppProps {
 
 type Overlay = "palette" | "help" | null;
 
-type PaletteCommand = "create" | "pull-linear" | "help" | "theme";
+type PaletteCommand =
+  | "create"
+  | "pull-linear"
+  | "set-linear-key"
+  | "help"
+  | "theme";
 
 type PaletteItem =
   | { kind: "command"; id: PaletteCommand; label: string; hint: string }
@@ -52,17 +57,36 @@ const PRIORITY_LABELS: Record<Priority, string> = {
   low: "Low",
 };
 
-const COMMANDS: readonly PaletteItem[] = [
+interface CommandItem {
+  kind: "command";
+  id: PaletteCommand;
+  label: string;
+  hint: string;
+}
+
+const COMMANDS: readonly CommandItem[] = [
   { kind: "command", id: "create", label: "New todo", hint: "c" },
-  {
-    kind: "command",
-    id: "pull-linear",
-    label: "Pull Linear issues",
-    hint: "M5",
-  },
+  { kind: "command", id: "pull-linear", label: "Pull Linear issues", hint: "" },
+  { kind: "command", id: "set-linear-key", label: "Set Linear API key", hint: "" },
   { kind: "command", id: "theme", label: "Toggle theme", hint: "" },
   { kind: "command", id: "help", label: "Shortcut help", hint: "?" },
 ];
+
+// 키가 없으면 Linear 관련 명령을 팔레트에서 숨긴다.
+// 키를 아예 읽지 못하는 기기(key_store_available=false)면 설정 명령도 숨긴다.
+function commandIsVisible(
+  id: PaletteCommand,
+  linear: LinearStatus | null,
+): boolean {
+  switch (id) {
+    case "pull-linear":
+      return linear?.configured === true;
+    case "set-linear-key":
+      return linear?.keyStoreAvailable === true;
+    default:
+      return true;
+  }
+}
 
 const THEME_LABELS: Record<ThemePreference, string> = {
   auto: "자동",
@@ -117,6 +141,7 @@ export const App: Component<AppProps> = (props) => {
   const [paletteQuery, setPaletteQuery] = createSignal("");
   const [paletteTodos, setPaletteTodos] = createSignal<Todo[]>([]);
   const [theme, setTheme] = createSignal<ThemePreference>(readPreference(localStorage));
+  const [linearStatus, setLinearStatus] = createSignal<LinearStatus | null>(null);
   const undo = new UndoStack();
   const rowElements = new Map<string, HTMLButtonElement>();
   let editorInput: HTMLInputElement | undefined;
@@ -130,9 +155,10 @@ export const App: Component<AppProps> = (props) => {
   );
   const paletteItems = createMemo<readonly PaletteItem[]>(() => {
     const query = paletteQuery().trim().toLocaleLowerCase();
+    const status = linearStatus();
     const commands = COMMANDS.filter(
       (item) =>
-        item.kind === "command" &&
+        commandIsVisible(item.id, status) &&
         (query === "" || item.label.toLocaleLowerCase().includes(query)),
     );
     return [
@@ -140,6 +166,14 @@ export const App: Component<AppProps> = (props) => {
       ...paletteTodos().map((todo): PaletteItem => ({ kind: "todo", todo })),
     ];
   });
+
+  async function refreshLinearStatus(): Promise<void> {
+    try {
+      setLinearStatus(await props.client.linearStatus());
+    } catch {
+      // status 는 항상 200 이어야 한다. 실패해도 앱을 막지 않는다.
+    }
+  }
 
   function filterForCurrentView(): Filter {
     return {
@@ -257,6 +291,16 @@ export const App: Component<AppProps> = (props) => {
         await props.client.linkLinear(id, value);
         setInputMode("none");
         setToast("Linear 이슈를 연결했습니다.");
+        await load();
+        focusCurrentRow();
+      } else if (mode === "linear_key") {
+        const key = value.trim();
+        if (key === "") return;
+        await props.client.setLinearKey(key);
+        setInputMode("none");
+        setInputValue("");
+        setToast("Linear 키를 저장했습니다.");
+        await refreshLinearStatus();
         focusCurrentRow();
       } else if (mode === "search") {
         setInputMode("none");
@@ -421,11 +465,15 @@ export const App: Component<AppProps> = (props) => {
       case "theme":
         toggleTheme();
         break;
+      case "set-linear-key":
+        beginInput("linear_key", "", []);
+        break;
       case "pull-linear":
         try {
           const result = await props.client.pullLinear();
           setToast(`Linear: 새로 ${result.created}건, 건너뜀 ${result.skipped}건`);
           await load();
+          await refreshLinearStatus();
         } catch (reason) {
           setError(messageFrom(reason));
         }
@@ -516,11 +564,25 @@ export const App: Component<AppProps> = (props) => {
         await removeTodos(action.ids);
         break;
       case "BeginLinearLink":
+        if (linearStatus()?.configured !== true) {
+          setToast("Linear API 키를 먼저 설정하십시오. ⌘K → Set Linear API key");
+          break;
+        }
         beginInput("link", "", [action.id]);
         break;
-      case "OpenLinearIssue":
-        setError("REST todo 응답에 Linear URL이 없어 M5 전에는 이 이슈를 열 수 없습니다.");
+      case "OpenLinearIssue": {
+        const linked = todos().find((todo) => todo.id === action.id);
+        if (linked?.linear) {
+          try {
+            await props.client.openExternal(linked.linear.url);
+          } catch (reason) {
+            setError(messageFrom(reason));
+          }
+        } else {
+          setToast("연결된 Linear 이슈가 없습니다.");
+        }
         break;
+      }
       case "SetFilter":
         changeFilter(action.status);
         break;
@@ -584,6 +646,7 @@ export const App: Component<AppProps> = (props) => {
 
   onMount(() => {
     void load();
+    void refreshLinearStatus();
     const unsubscribe = props.client.subscribe(() => void load());
     window.addEventListener("keydown", onKeyDown);
     onCleanup(() => {
@@ -659,16 +722,28 @@ export const App: Component<AppProps> = (props) => {
           </div>
         </Show>
 
-        <Show when={inputMode() === "due" || inputMode() === "link"}>
+        <Show when={inputMode() === "due" || inputMode() === "link" || inputMode() === "linear_key"}>
           <div class="inline-editor action-editor">
             <label for="action-input">
-              {inputMode() === "due" ? "Due date" : "Linear issue"}
+              {inputMode() === "due"
+                ? "Due date"
+                : inputMode() === "link"
+                  ? "Linear issue"
+                  : "Linear API key"}
             </label>
             <input
               id="action-input"
               ref={editorInput}
+              type={inputMode() === "linear_key" ? "password" : "text"}
+              autocomplete={inputMode() === "linear_key" ? "off" : undefined}
               value={inputValue()}
-              placeholder={inputMode() === "due" ? "tomorrow, fri, 3d, or blank" : "PI-1234"}
+              placeholder={
+                inputMode() === "due"
+                  ? "tomorrow, fri, 3d, or blank"
+                  : inputMode() === "link"
+                    ? "PI-1234"
+                    : "lin_api_…"
+              }
               onInput={(event) => setInputValue(event.currentTarget.value)}
             />
             <kbd>Enter</kbd>
@@ -777,6 +852,23 @@ export const App: Component<AppProps> = (props) => {
                 <div><dt>Due</dt><dd>{todo().due_date ?? "—"}</dd></div>
                 <div><dt>Created</dt><dd>{todo().created_at}</dd></div>
                 <div><dt>Updated</dt><dd>{todo().updated_at}</dd></div>
+                <Show when={todo().linear}>
+                  {(linear) => (
+                    <div>
+                      <dt>Linear</dt>
+                      <dd>
+                        <button
+                          type="button"
+                          class="linear-link"
+                          onClick={() => void props.client.openExternal(linear().url)}
+                        >
+                          {linear().identifier}
+                        </button>
+                        <span class="row-help"> · o로 열기</span>
+                      </dd>
+                    </div>
+                  )}
+                </Show>
               </dl>
             </>
           )}

@@ -2,6 +2,17 @@ export type Status = "todo" | "in_progress" | "done";
 
 export type Priority = "none" | "urgent" | "high" | "medium" | "low";
 
+export interface LinearRef {
+  identifier: string;
+  url: string;
+}
+
+export interface LinearStatus {
+  configured: boolean;
+  keyStoreAvailable: boolean;
+  failing: number;
+}
+
 export interface Todo {
   id: string;
   title: string;
@@ -13,6 +24,7 @@ export interface Todo {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  linear: LinearRef | null;
 }
 
 export interface Filter {

@@ -1,7 +1,15 @@
 import type { Priority, Status } from "./domain";
 
 export type ShortcutScope = "global" | "todo" | "palette" | "help";
-export type InputMode = "none" | "create" | "edit" | "due" | "link" | "search" | "palette";
+export type InputMode =
+  | "none"
+  | "create"
+  | "edit"
+  | "due"
+  | "link"
+  | "search"
+  | "palette"
+  | "linear_key";
 
 export interface KeyboardState {
   scopeStack: readonly ShortcutScope[];

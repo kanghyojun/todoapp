@@ -2,8 +2,8 @@ use chrono::DateTime;
 use sqlx::Row;
 use tempfile::NamedTempFile;
 use todo_core::{
-    CreateTodoInput, DomainEvent, Error, LinearLinkInput, Priority, Status, TodoCore, TodoFilter,
-    TodoPatch,
+    CreateTodoInput, DomainEvent, Error, LinearLinkInput, LinearRef, Priority, Status, TodoCore,
+    TodoFilter, TodoPatch,
 };
 
 async fn test_core() -> (NamedTempFile, TodoCore) {
@@ -905,6 +905,54 @@ async fn link_linear_preserves_local_title_and_description() {
 
     assert_eq!(after.title, "내 제목");
     assert_eq!(after.description, "내 설명");
+}
+
+#[tokio::test]
+async fn reads_carry_the_linear_link_when_present() {
+    let (_database, core) = test_core().await;
+    let linked = core
+        .create_todo(CreateTodoInput::new("linked"))
+        .await
+        .expect("create linked");
+    let bare = core
+        .create_todo(CreateTodoInput::new("bare"))
+        .await
+        .expect("create bare");
+    core.link_linear(linked.id, linear_link("read-issue"))
+        .await
+        .expect("link issue");
+
+    // 단건 읽기는 링크를 실어 온다.
+    let got = core.get_todo(linked.id).await.expect("get linked");
+    assert_eq!(
+        got.linear,
+        Some(LinearRef {
+            identifier: "PI-1234".to_owned(),
+            url: "https://linear.app/example/issue/PI-1234".to_owned(),
+        }),
+    );
+
+    // 링크 없는 todo 는 None 이다.
+    assert_eq!(
+        core.get_todo(bare.id).await.expect("get bare").linear,
+        None,
+    );
+
+    // 목록 읽기도 같은 정보를 실어 온다.
+    let listed = core
+        .list_todos(TodoFilter::default())
+        .await
+        .expect("list todos");
+    let linked_in_list = listed
+        .iter()
+        .find(|todo| todo.id == linked.id)
+        .expect("linked todo in list");
+    assert_eq!(linked_in_list.linear.as_ref().map(|link| &link.identifier), Some(&"PI-1234".to_owned()));
+    let bare_in_list = listed
+        .iter()
+        .find(|todo| todo.id == bare.id)
+        .expect("bare todo in list");
+    assert_eq!(bare_in_list.linear, None);
 }
 
 #[tokio::test]

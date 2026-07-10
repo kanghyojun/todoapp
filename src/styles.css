@@ -254,6 +254,15 @@ button.todo-row { cursor: pointer; }
 
 .row-help { color: var(--muted); font-size: 10px; }
 
+.linear-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--info);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .inline-editor {
   display: grid;
   grid-template-columns: 110px minmax(180px, 460px) auto;

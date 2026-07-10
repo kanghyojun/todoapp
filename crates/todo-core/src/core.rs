@@ -8,8 +8,8 @@ use sqlx::{
 use tokio::sync::broadcast;
 
 use crate::{
-    CreateTodoInput, DomainEvent, Error, LinearLinkInput, Priority, Result, Status, Todo,
-    TodoFilter, TodoId, TodoPatch, parse_due_date,
+    CreateTodoInput, DomainEvent, Error, LinearLinkInput, LinearRef, Priority, Result, Status,
+    Todo, TodoFilter, TodoId, TodoPatch, parse_due_date,
 };
 
 #[derive(Clone)]
@@ -85,9 +85,11 @@ impl TodoCore {
 
     pub async fn get_todo(&self, id: TodoId) -> Result<Todo> {
         let row = sqlx::query_as::<_, TodoRow>(
-            "SELECT id, title, description, status, priority, due_date, completed_at, \
-                    created_at, updated_at, deleted_at \
-             FROM todos WHERE id = ? AND deleted_at IS NULL",
+            "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
+                    t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
+                    li.identifier AS linear_identifier, li.url AS linear_url \
+             FROM todos AS t LEFT JOIN linear_links AS li ON li.todo_id = t.id \
+             WHERE t.id = ? AND t.deleted_at IS NULL",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -116,8 +118,10 @@ impl TodoCore {
         let mut query = if let Some(expression) = match_expression {
             let mut query = QueryBuilder::<Sqlite>::new(
                 "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
-                 t.completed_at, t.created_at, t.updated_at, t.deleted_at \
+                 t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
+                 li.identifier AS linear_identifier, li.url AS linear_url \
                  FROM todos_fts JOIN todos AS t ON t.rowid = todos_fts.rowid \
+                 LEFT JOIN linear_links AS li ON li.todo_id = t.id \
                  WHERE todos_fts MATCH ",
             );
             query
@@ -126,8 +130,11 @@ impl TodoCore {
             query
         } else {
             QueryBuilder::<Sqlite>::new(
-                "SELECT id, title, description, status, priority, due_date, completed_at, \
-                 created_at, updated_at, deleted_at FROM todos WHERE deleted_at IS NULL",
+                "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
+                 t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
+                 li.identifier AS linear_identifier, li.url AS linear_url \
+                 FROM todos AS t LEFT JOIN linear_links AS li ON li.todo_id = t.id \
+                 WHERE t.deleted_at IS NULL",
             )
         };
         let column_prefix = if search.is_some() { "t." } else { "" };
@@ -404,9 +411,11 @@ async fn fetch_todo_row(
     transaction: &mut sqlx::Transaction<'_, Sqlite>,
 ) -> Result<TodoRow> {
     sqlx::query_as::<_, TodoRow>(
-        "SELECT id, title, description, status, priority, due_date, completed_at, \
-                created_at, updated_at, deleted_at \
-         FROM todos WHERE id = ? AND deleted_at IS NULL",
+        "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
+                t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
+                li.identifier AS linear_identifier, li.url AS linear_url \
+         FROM todos AS t LEFT JOIN linear_links AS li ON li.todo_id = t.id \
+         WHERE t.id = ? AND t.deleted_at IS NULL",
     )
     .bind(id.to_string())
     .fetch_optional(&mut **transaction)
@@ -426,6 +435,10 @@ struct TodoRow {
     created_at: String,
     updated_at: String,
     deleted_at: Option<String>,
+    #[sqlx(default)]
+    linear_identifier: Option<String>,
+    #[sqlx(default)]
+    linear_url: Option<String>,
 }
 
 impl TryFrom<TodoRow> for Todo {
@@ -447,6 +460,10 @@ impl TryFrom<TodoRow> for Todo {
             created_at: row.created_at,
             updated_at: row.updated_at,
             deleted_at: row.deleted_at,
+            linear: match (row.linear_identifier, row.linear_url) {
+                (Some(identifier), Some(url)) => Some(LinearRef { identifier, url }),
+                _ => None,
+            },
         })
     }
 }
