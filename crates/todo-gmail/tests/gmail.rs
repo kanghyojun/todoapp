@@ -52,3 +52,31 @@ async fn migration_creates_gmail_tables() {
     assert_eq!(store.get("a@x.com").unwrap().as_deref(), Some("refresh-1"));
     let _ = Arc::new(store);
 }
+
+#[tokio::test]
+async fn accounts_insert_list_delete_roundtrip() {
+    let (_db, core) = connect().await;
+    let a = todo_gmail::store::insert_account(core.pool(), "a@x.com")
+        .await
+        .unwrap();
+    let b = todo_gmail::store::insert_account(core.pool(), "b@x.com")
+        .await
+        .unwrap();
+    assert_ne!(a.color, b.color);
+
+    // 같은 이메일 재삽입은 기존 계정을 반환한다.
+    let a_again = todo_gmail::store::insert_account(core.pool(), "a@x.com")
+        .await
+        .unwrap();
+    assert_eq!(a.id, a_again.id);
+
+    let all = todo_gmail::store::list_accounts(core.pool()).await.unwrap();
+    assert_eq!(all.len(), 2);
+
+    todo_gmail::store::delete_account(core.pool(), &a.id)
+        .await
+        .unwrap();
+    let remaining = todo_gmail::store::list_accounts(core.pool()).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, b.id);
+}
