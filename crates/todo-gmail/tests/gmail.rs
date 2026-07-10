@@ -464,6 +464,26 @@ async fn archive_optimistic_then_pushes_modify() {
 }
 
 #[tokio::test]
+async fn remove_account_deletes_token_and_messages() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    seed_message(&harness.core, &account.id, "m1", 1, 0).await;
+
+    harness.service.remove_account(&account.id).await.unwrap();
+
+    assert!(harness.service.accounts().await.unwrap().is_empty());
+    assert!(harness.tokens.get("me@x.com").unwrap().is_none());
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gmail_messages")
+        .fetch_one(harness.core.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
 async fn set_read_enqueues_and_pushes() {
     let harness = harness().await;
     let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
@@ -217,6 +218,61 @@ impl GmailService {
         Ok(summary)
     }
 
+    pub async fn accounts(&self) -> Result<Vec<GmailAccount>, Error> {
+        store::list_accounts(self.core.pool()).await
+    }
+
+    /// 계정과 캐시(메시지·아웃박스, CASCADE)와 키체인 토큰을 모두 제거한다.
+    pub async fn remove_account(&self, account_id: &str) -> Result<(), Error> {
+        let account = store::fetch_account(self.core.pool(), account_id).await?;
+        let _ = self.tokens.delete(&account.email);
+        self.access_cache.write().await.remove(&account.email);
+        store::delete_account(self.core.pool(), account_id).await?;
+        self.emit();
+        Ok(())
+    }
+
+    /// 모든 계정을 동기화한다. 개별 계정 실패는 로깅하고 계속 진행한다.
+    pub async fn sync_all(&self) -> Result<(), Error> {
+        let accounts = store::list_accounts(self.core.pool()).await?;
+        for account in accounts {
+            if let Err(error) = self.sync_account(&account.id).await {
+                eprintln!("todo-gmail sync failed for {}: {error}", account.email);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<MailEvent> {
+        self.events.subscribe()
+    }
+
+    /// 주기 동기화(60초)와 아웃박스 처리(5초) 워커를 띄운다.
+    pub fn spawn_workers(&self) {
+        let sync_service = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if let Err(error) = sync_service.sync_all().await {
+                    eprintln!("todo-gmail sync worker error: {error}");
+                }
+            }
+        });
+        let outbox_service = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if let Err(error) = outbox_service.process_outbox_once().await {
+                    eprintln!("todo-gmail outbox worker error: {error}");
+                }
+            }
+        });
+    }
+
     /// 로컬 캐시에서 폴더·계정·검색 필터로 메일 목록을 조회한다.
     pub async fn list(&self, filter: MailFilter) -> Result<Vec<MailListItem>, Error> {
         store::query_messages(self.core.pool(), &filter).await
@@ -401,11 +457,10 @@ impl GmailService {
 
     async fn access_token(&self, email: &str) -> Result<String, Error> {
         let now = Utc::now().timestamp();
-        if let Some((token, expiry)) = self.access_cache.read().await.get(email).cloned() {
-            if expiry > now {
+        if let Some((token, expiry)) = self.access_cache.read().await.get(email).cloned()
+            && expiry > now {
                 return Ok(token);
             }
-        }
         let (client_id, client_secret) = self.require_credentials().await?;
         let refresh = self.tokens.get(email)?.ok_or(Error::NotConfigured)?;
         match oauth::refresh_token(
@@ -508,13 +563,12 @@ fn urlencode(value: &str) -> String {
 /// `Name <addr@host>` 또는 `addr@host` 형식에서 이름과 주소를 분리한다.
 fn parse_from(value: &str) -> (String, String) {
     let value = value.trim();
-    if let Some(start) = value.rfind('<') {
-        if let Some(end) = value[start..].find('>') {
+    if let Some(start) = value.rfind('<')
+        && let Some(end) = value[start..].find('>') {
             let email = value[start + 1..start + end].trim().to_owned();
             let name = value[..start].trim().trim_matches('"').trim().to_owned();
             return (name, email);
         }
-    }
     (String::new(), value.to_owned())
 }
 
@@ -617,18 +671,15 @@ struct PartBody {
 /// MIME 트리를 순회해 첫 text/plain·text/html 본문을 채운다.
 fn walk_part(part: &BodyPart, text: &mut Option<String>, html: &mut Option<String>) {
     if part.mime_type == "text/plain" && text.is_none() {
-        if let Some(body) = &part.body {
-            if let Some(data) = &body.data {
+        if let Some(body) = &part.body
+            && let Some(data) = &body.data {
                 *text = decode_base64url(data);
             }
-        }
-    } else if part.mime_type == "text/html" && html.is_none() {
-        if let Some(body) = &part.body {
-            if let Some(data) = &body.data {
+    } else if part.mime_type == "text/html" && html.is_none()
+        && let Some(body) = &part.body
+            && let Some(data) = &body.data {
                 *html = decode_base64url(data);
             }
-        }
-    }
     for child in &part.parts {
         walk_part(child, text, html);
     }
