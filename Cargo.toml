@@ -1,4 +1,3 @@
 [workspace]
-members = ["crates/todo-core"]
+members = ["crates/todo-core", "crates/todo-server"]
 resolver = "2"
-
