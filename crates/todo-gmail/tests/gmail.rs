@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use tempfile::NamedTempFile;
 use todo_core::TodoCore;
-use todo_gmail::{TokenStore, TokenStoreError};
+use todo_gmail::{GmailService, TokenStore, TokenStoreError};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[derive(Default)]
 struct MemoryTokenStore {
@@ -33,6 +35,72 @@ async fn connect() -> (NamedTempFile, TodoCore) {
         .await
         .expect("connect core");
     (database, core)
+}
+
+struct Harness {
+    _db: NamedTempFile,
+    core: TodoCore,
+    mock: MockServer,
+    tokens: Arc<MemoryTokenStore>,
+    service: GmailService,
+}
+
+async fn harness() -> Harness {
+    let (db, core) = connect().await;
+    let mock = MockServer::start().await;
+    let tokens = Arc::new(MemoryTokenStore::default());
+    let service = GmailService::with_endpoints(
+        core.clone(),
+        tokens.clone(),
+        mock.uri(),
+        format!("{}/gmail/v1", mock.uri()),
+    );
+    service
+        .set_client_credentials("cid", "secret")
+        .await
+        .expect("seed credentials");
+    Harness {
+        _db: db,
+        core,
+        mock,
+        tokens,
+        service,
+    }
+}
+
+#[tokio::test]
+async fn complete_auth_stores_account_and_refresh_token() {
+    let harness = harness().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "at-1", "refresh_token": "rt-1", "expires_in": 3600
+        })))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "emailAddress": "me@x.com", "historyId": "12345"
+        })))
+        .mount(&harness.mock)
+        .await;
+
+    let account = harness
+        .service
+        .complete_auth("code-1", "verifier-1", "http://127.0.0.1:1234")
+        .await
+        .expect("complete auth");
+    assert_eq!(account.email, "me@x.com");
+    assert_eq!(account.history_id.as_deref(), Some("12345"));
+    assert_eq!(
+        harness.tokens.get("me@x.com").unwrap().as_deref(),
+        Some("rt-1")
+    );
+    let accounts = todo_gmail::store::list_accounts(harness.core.pool())
+        .await
+        .unwrap();
+    assert_eq!(accounts.len(), 1);
 }
 
 #[tokio::test]
