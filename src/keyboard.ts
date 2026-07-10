@@ -1,6 +1,6 @@
 import type { Priority, Status } from "./domain";
 
-export type ShortcutScope = "global" | "todo" | "palette" | "help";
+export type ShortcutScope = "global" | "todo" | "mail" | "palette" | "help";
 export type InputMode = "none" | "create" | "edit" | "due" | "link" | "search" | "palette";
 
 export interface KeyboardState {
