@@ -9,6 +9,8 @@ import {
 } from "solid-js";
 import type { TodoClient } from "./client";
 import type { Filter, Priority, Status, Todo } from "./domain";
+import { MailView } from "./mail/MailView";
+import type { GmailClient } from "./mail/client";
 import {
   handleKey,
   type Action,
@@ -27,12 +29,22 @@ import { UndoStack, type InverseAction } from "./undo";
 
 interface AppProps {
   client: TodoClient;
+  gmailClient?: GmailClient;
   externalServerError?: string;
 }
 
+type Tab = "todo" | "mail";
+
 type Overlay = "palette" | "help" | null;
 
-type PaletteCommand = "create" | "pull-linear" | "help" | "theme";
+type PaletteCommand =
+  | "create"
+  | "pull-linear"
+  | "help"
+  | "theme"
+  | "mail-view"
+  | "mail-add-account"
+  | "mail-sync";
 
 type PaletteItem =
   | { kind: "command"; id: PaletteCommand; label: string; hint: string }
@@ -117,6 +129,7 @@ export const App: Component<AppProps> = (props) => {
   const [paletteQuery, setPaletteQuery] = createSignal("");
   const [paletteTodos, setPaletteTodos] = createSignal<Todo[]>([]);
   const [theme, setTheme] = createSignal<ThemePreference>(readPreference(localStorage));
+  const [activeTab, setActiveTab] = createSignal<Tab>("todo");
   const undo = new UndoStack();
   const rowElements = new Map<string, HTMLButtonElement>();
   let editorInput: HTMLInputElement | undefined;
@@ -128,9 +141,20 @@ export const App: Component<AppProps> = (props) => {
   const detailTodo = createMemo(() =>
     todos().find((todo) => todo.id === detailId()),
   );
+  const availableCommands = createMemo<readonly PaletteItem[]>(() => {
+    const list: PaletteItem[] = [...COMMANDS];
+    if (props.gmailClient) {
+      list.push(
+        { kind: "command", id: "mail-view", label: "메일 보기", hint: "" },
+        { kind: "command", id: "mail-add-account", label: "메일 계정 추가", hint: "" },
+        { kind: "command", id: "mail-sync", label: "메일 동기화", hint: "" },
+      );
+    }
+    return list;
+  });
   const paletteItems = createMemo<readonly PaletteItem[]>(() => {
     const query = paletteQuery().trim().toLocaleLowerCase();
-    const commands = COMMANDS.filter(
+    const commands = availableCommands().filter(
       (item) =>
         item.kind === "command" &&
         (query === "" || item.label.toLocaleLowerCase().includes(query)),
@@ -430,6 +454,29 @@ export const App: Component<AppProps> = (props) => {
           setError(messageFrom(reason));
         }
         break;
+      case "mail-view":
+        setActiveTab("mail");
+        break;
+      case "mail-add-account":
+        if (props.gmailClient) {
+          try {
+            await props.gmailClient.addAccount();
+            setActiveTab("mail");
+          } catch (reason) {
+            setError(messageFrom(reason));
+          }
+        }
+        break;
+      case "mail-sync":
+        if (props.gmailClient) {
+          try {
+            await props.gmailClient.sync();
+            setToast("메일 동기화를 시작했습니다.");
+          } catch (reason) {
+            setError(messageFrom(reason));
+          }
+        }
+        break;
     }
   }
 
@@ -547,7 +594,8 @@ export const App: Component<AppProps> = (props) => {
   }
 
   function scopeStack(): ShortcutScope[] {
-    const stack: ShortcutScope[] = ["global", "todo"];
+    const base: ShortcutScope = activeTab() === "mail" ? "mail" : "todo";
+    const stack: ShortcutScope[] = ["global", base];
     const currentOverlay = overlay();
     if (currentOverlay !== null) stack.push(currentOverlay);
     return stack;
@@ -611,9 +659,33 @@ export const App: Component<AppProps> = (props) => {
       </header>
 
       <nav class="tabbar" role="tablist" aria-label="앱 탭">
-        <button type="button" role="tab" aria-selected="true">Todo</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab() === "todo"}
+          classList={{ active: activeTab() === "todo" }}
+          onClick={() => setActiveTab("todo")}
+        >
+          Todo
+        </button>
+        <Show when={props.gmailClient}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab() === "mail"}
+            classList={{ active: activeTab() === "mail" }}
+            onClick={() => setActiveTab("mail")}
+          >
+            Mail
+          </button>
+        </Show>
       </nav>
 
+      <Show when={activeTab() === "mail" ? props.gmailClient : undefined}>
+        {(client) => <MailView client={client()} />}
+      </Show>
+
+      <Show when={activeTab() === "todo"}>
       <main class="todo-view">
         <div class="filter-row" aria-label="상태 필터">
           <For each={[
@@ -756,6 +828,7 @@ export const App: Component<AppProps> = (props) => {
           </Show>
         </section>
       </main>
+      </Show>
 
       <aside
         class="detail-panel"
