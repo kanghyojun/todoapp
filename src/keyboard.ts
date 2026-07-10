@@ -196,7 +196,7 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
       return { type: "SetFilter", status: "in_progress" };
     case "3":
       return { type: "SetFilter", status: "done" };
-    case "0":
+    case "4":
       return { type: "SetFilter" };
     case "u":
       return { type: "Undo" };

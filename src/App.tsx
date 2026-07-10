@@ -43,19 +43,21 @@ type PaletteItem =
   | { kind: "command"; id: PaletteCommand; label: string; hint: string }
   | { kind: "todo"; todo: Todo };
 
+// 화면에 보이는 상태 표기는 한국어. DB·REST·MCP 로 오가는 값은
+// todo/in_progress/done/deferred 그대로다. 표시와 저장을 나눈다.
 const STATUS_LABELS: Record<Status, string> = {
-  todo: "todo",
-  in_progress: "in progress",
-  done: "done",
-  deferred: "deferred",
+  todo: "할 일",
+  in_progress: "진행 중",
+  done: "완료",
+  deferred: "보류",
 };
 
 const PRIORITY_LABELS: Record<Priority, string> = {
-  none: "None",
-  urgent: "Urgent",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
+  none: "없음",
+  urgent: "긴급",
+  high: "높음",
+  medium: "보통",
+  low: "낮음",
 };
 
 interface CommandItem {
@@ -66,11 +68,11 @@ interface CommandItem {
 }
 
 const COMMANDS: readonly CommandItem[] = [
-  { kind: "command", id: "create", label: "New todo", hint: "c" },
-  { kind: "command", id: "pull-linear", label: "Pull Linear issues", hint: "" },
-  { kind: "command", id: "set-linear-key", label: "Set Linear API key", hint: "" },
-  { kind: "command", id: "theme", label: "Toggle theme", hint: "" },
-  { kind: "command", id: "help", label: "Shortcut help", hint: "?" },
+  { kind: "command", id: "create", label: "새 할 일", hint: "c" },
+  { kind: "command", id: "pull-linear", label: "Linear 이슈 가져오기", hint: "" },
+  { kind: "command", id: "set-linear-key", label: "Linear API 키 설정", hint: "" },
+  { kind: "command", id: "theme", label: "테마 전환", hint: "" },
+  { kind: "command", id: "help", label: "단축키 도움말", hint: "?" },
 ];
 
 // 키가 없으면 Linear 관련 명령을 팔레트에서 숨긴다.
@@ -107,16 +109,16 @@ const ACTION_EDITOR: Partial<Record<InputMode, { label: string; placeholder: str
 const SHORTCUTS: readonly [string, string][] = [
   ["j / k", "아래 / 위로 이동"],
   ["Enter / Esc", "상세 열기 / 닫기·취소·선택 해제"],
-  ["c", "새 todo. Shift+Enter로 연속 생성"],
+  ["c", "새 할 일. Shift+Enter로 연속 생성"],
   ["e", "제목 편집"],
-  ["d / i", "done / in progress 토글"],
+  ["d / i", "완료 / 진행 중 토글"],
   ["s", "보류 토글 (복귀일 입력, 비우면 계속 보류)"],
   ["p u·h·m·l·n", "우선순위 지정"],
   ["t", "마감일 입력"],
   ["x", "선택 토글"],
   ["Backspace", "삭제"],
   ["l / o", "Linear 이슈 연결 / 열기"],
-  ["1 / 2 / 3 / 0", "todo / in progress / done / 전체"],
+  ["1 / 2 / 3 / 4", "할 일 / 진행 중 / 완료 / 전체"],
   ["g", "보류 레인 펼치기·접기"],
   ["/", "검색"],
   ["u", "되돌리기"],
@@ -156,6 +158,8 @@ export const App: Component<AppProps> = (props) => {
   const [linearStatus, setLinearStatus] = createSignal<LinearStatus | null>(null);
   const [deferredTodos, setDeferredTodos] = createSignal<Todo[]>([]);
   const [laneOpen, setLaneOpen] = createSignal(localStorage.getItem("todo.lane") === "open");
+  // Command 을 누르고 있으면 필터 칩 힌트를 ⌘1 처럼 보여준다.
+  const [metaHeld, setMetaHeld] = createSignal(false);
   const undo = new UndoStack();
   const rowElements = new Map<string, HTMLButtonElement>();
   let editorInput: HTMLInputElement | undefined;
@@ -291,7 +295,7 @@ export const App: Component<AppProps> = (props) => {
       if (mode === "create") {
         const created = await props.client.create({ title: value });
         undo.push([{ type: "Remove", id: created.id }]);
-        setToast("Todo를 만들었습니다.");
+        setToast("할 일을 만들었습니다.");
         setInputValue("");
         if (!keepCreating) {
           setInputMode("none");
@@ -689,6 +693,7 @@ export const App: Component<AppProps> = (props) => {
   }
 
   function onKeyDown(event: KeyboardEvent): void {
+    if (event.metaKey || event.key === "Meta") setMetaHeld(true);
     const shortcutEvent: ShortcutKeyEvent = {
       key: event.key,
       at: performance.now(),
@@ -719,14 +724,26 @@ export const App: Component<AppProps> = (props) => {
     }
   }
 
+  function onKeyUp(event: KeyboardEvent): void {
+    if (event.key === "Meta" || !event.metaKey) setMetaHeld(false);
+  }
+  // 창을 벗어나면 keyup 을 놓칠 수 있으니 ⌘ 힌트를 확실히 끈다.
+  function clearMeta(): void {
+    setMetaHeld(false);
+  }
+
   onMount(() => {
     void load();
     void refreshLinearStatus();
     const unsubscribe = props.client.subscribe(() => void load());
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", clearMeta);
     onCleanup(() => {
       unsubscribe();
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", clearMeta);
     });
   });
 
@@ -754,10 +771,10 @@ export const App: Component<AppProps> = (props) => {
       <main class="todo-view">
         <div class="filter-row" aria-label="상태 필터">
           <For each={[
-            [undefined, "전체", "0"],
-            ["todo", "todo", "1"],
-            ["in_progress", "in progress", "2"],
-            ["done", "done", "3"],
+            ["todo", "할 일", "1"],
+            ["in_progress", "진행 중", "2"],
+            ["done", "완료", "3"],
+            [undefined, "전체", "4"],
           ] as const}>
             {([status, label, key]) => (
               <button
@@ -767,7 +784,7 @@ export const App: Component<AppProps> = (props) => {
                 aria-pressed={statusFilter() === status}
                 onClick={() => changeFilter(status)}
               >
-                {label}<kbd>{key}</kbd>
+                {label}<kbd>{metaHeld() ? `⌘${key}` : key}</kbd>
               </button>
             )}
           </For>
@@ -825,7 +842,7 @@ export const App: Component<AppProps> = (props) => {
           {(message) => <div class="error-banner" role="alert">{message()}</div>}
         </Show>
 
-        <section class="list-section" aria-label="Todo 목록">
+        <section class="list-section" aria-label="할 일 목록">
           <Show when={inputMode() === "create"}>
             <div class="todo-row inline-create">
               <span class="row-marker">+</span>
@@ -841,7 +858,7 @@ export const App: Component<AppProps> = (props) => {
           </Show>
 
           <Show when={!loading()} fallback={<div class="empty-state">불러오는 중…</div>}>
-            <Show when={todos().length > 0} fallback={<div class="empty-state">표시할 todo가 없습니다. c로 만드십시오.</div>}>
+            <Show when={todos().length > 0} fallback={<div class="empty-state">표시할 할 일이 없습니다. c로 만드십시오.</div>}>
               <div role="listbox" aria-multiselectable="true">
                 <For each={todos()}>
                   {(todo, index) => (
@@ -956,11 +973,14 @@ export const App: Component<AppProps> = (props) => {
               <h1 id="detail-heading">{todo().title}</h1>
               <p class="description">{todo().description || "설명이 없습니다."}</p>
               <dl>
-                <div><dt>Status</dt><dd>{STATUS_LABELS[todo().status]}</dd></div>
-                <div><dt>Priority</dt><dd>{PRIORITY_LABELS[todo().priority]}</dd></div>
-                <div><dt>Due</dt><dd>{todo().due_date ?? "—"}</dd></div>
-                <div><dt>Created</dt><dd>{todo().created_at}</dd></div>
-                <div><dt>Updated</dt><dd>{todo().updated_at}</dd></div>
+                <div><dt>상태</dt><dd>{STATUS_LABELS[todo().status]}</dd></div>
+                <div><dt>우선순위</dt><dd>{PRIORITY_LABELS[todo().priority]}</dd></div>
+                <div><dt>마감</dt><dd>{todo().due_date ?? "—"}</dd></div>
+                <Show when={todo().status === "deferred"}>
+                  <div><dt>복귀</dt><dd>{todo().deferred_until ?? "계속 보류"}</dd></div>
+                </Show>
+                <div><dt>만든 때</dt><dd>{todo().created_at}</dd></div>
+                <div><dt>고친 때</dt><dd>{todo().updated_at}</dd></div>
                 <Show when={todo().linear}>
                   {(linear) => (
                     <div>
@@ -991,9 +1011,9 @@ export const App: Component<AppProps> = (props) => {
           <section class="palette" role="dialog" aria-modal="true" aria-label="커맨드 팔레트">
             <input
               ref={paletteInput}
-              aria-label="명령 또는 todo 검색"
+              aria-label="명령 또는 할 일 검색"
               value={paletteQuery()}
-              placeholder="명령 또는 todo 검색"
+              placeholder="명령 또는 할 일 검색"
               onInput={(event) => void searchPalette(event.currentTarget.value)}
             />
             <div class="palette-results" role="listbox">

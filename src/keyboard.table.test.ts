@@ -55,11 +55,11 @@ describe("스펙 6절 단축키 표의 모든 행", () => {
     expect(press("o")).toEqual({ type: "OpenLinearIssue", id: "b" });
   });
 
-  it("필터 1/2/3/0", () => {
+  it("필터 1/2/3/4", () => {
     expect(press("1")).toEqual({ type: "SetFilter", status: "todo" });
     expect(press("2")).toEqual({ type: "SetFilter", status: "in_progress" });
     expect(press("3")).toEqual({ type: "SetFilter", status: "done" });
-    expect(press("0")).toEqual({ type: "SetFilter" });
+    expect(press("4")).toEqual({ type: "SetFilter" });
   });
 
   it("검색 / 되돌리기 / 팔레트 / 도움말", () => {
