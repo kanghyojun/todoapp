@@ -10,7 +10,7 @@ use tokio::sync::{RwLock, broadcast};
 use todo_core::TodoCore;
 
 use crate::error::Error;
-use crate::model::{GmailAccount, MailBody, MailEvent, SyncSummary};
+use crate::model::{GmailAccount, MailBody, MailEvent, MailFilter, MailListItem, SyncSummary};
 use crate::store::MessageMeta;
 use crate::tokens::TokenStore;
 use crate::{oauth, store};
@@ -214,6 +214,11 @@ impl GmailService {
         store::set_history_id(self.core.pool(), &account.id, &profile.history_id).await?;
         self.emit();
         Ok(summary)
+    }
+
+    /// 로컬 캐시에서 폴더·계정·검색 필터로 메일 목록을 조회한다.
+    pub async fn list(&self, filter: MailFilter) -> Result<Vec<MailListItem>, Error> {
+        store::query_messages(self.core.pool(), &filter).await
     }
 
     /// 본문을 반환한다. 캐시에 있으면 즉시, 없으면 Gmail 에서 페치해 캐시한다.

@@ -1,8 +1,8 @@
 use chrono::{SecondsFormat, Utc};
-use sqlx::SqlitePool;
+use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 
 use crate::error::Error;
-use crate::model::{GmailAccount, MailBody};
+use crate::model::{GmailAccount, MailBody, MailFilter, MailFolder, MailListItem};
 
 const COLORS: [&str; 6] = [
     "#268bd2", "#2aa198", "#859900", "#b58900", "#d33682", "#cb4b16",
@@ -247,6 +247,51 @@ pub(crate) async fn write_body(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn query_messages(
+    pool: &SqlitePool,
+    filter: &MailFilter,
+) -> Result<Vec<MailListItem>, Error> {
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT m.account_id AS account_id, a.email AS account_email, a.color AS account_color, \
+         m.gmail_id AS gmail_id, m.thread_id AS thread_id, m.from_name AS from_name, \
+         m.from_email AS from_email, m.subject AS subject, m.snippet AS snippet, \
+         m.internal_date AS internal_date, m.in_inbox AS in_inbox, m.is_unread AS is_unread \
+         FROM gmail_messages m JOIN gmail_accounts a ON a.id = m.account_id WHERE 1 = 1",
+    );
+    match filter.folder {
+        MailFolder::Inbox => {
+            builder.push(" AND m.in_inbox = 1");
+        }
+        MailFolder::Archive => {
+            builder.push(" AND m.in_inbox = 0");
+        }
+        MailFolder::All => {}
+    }
+    if let Some(account_id) = &filter.account_id {
+        builder.push(" AND m.account_id = ").push_bind(account_id.clone());
+    }
+    if let Some(query) = filter.query.as_deref() {
+        let like = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
+        builder
+            .push(" AND (m.subject LIKE ")
+            .push_bind(like.clone())
+            .push(" ESCAPE '\\' OR m.from_name LIKE ")
+            .push_bind(like.clone())
+            .push(" ESCAPE '\\' OR m.from_email LIKE ")
+            .push_bind(like.clone())
+            .push(" ESCAPE '\\' OR m.snippet LIKE ")
+            .push_bind(like)
+            .push(" ESCAPE '\\')");
+    }
+    builder.push(" ORDER BY m.internal_date DESC");
+    let limit = filter.limit.unwrap_or(200).min(1_000);
+    builder.push(" LIMIT ").push_bind(i64::from(limit));
+    Ok(builder
+        .build_query_as::<MailListItem>()
+        .fetch_all(pool)
+        .await?)
 }
 
 pub(crate) async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, Error> {

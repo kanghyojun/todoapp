@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use tempfile::NamedTempFile;
 use todo_core::TodoCore;
-use todo_gmail::{GmailService, TokenStore, TokenStoreError};
+use todo_gmail::{GmailService, MailFilter, MailFolder, TokenStore, TokenStoreError};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -346,6 +346,87 @@ async fn get_body_fetches_and_caches() {
     .await
     .unwrap();
     assert!(fetched.is_some());
+}
+
+async fn seed_subject(
+    core: &TodoCore,
+    account_id: &str,
+    gmail_id: &str,
+    in_inbox: i64,
+    subject: &str,
+    internal_date: i64,
+) {
+    sqlx::query(
+        "INSERT INTO gmail_messages \
+         (account_id, gmail_id, thread_id, subject, internal_date, in_inbox, is_unread, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+    )
+    .bind(account_id)
+    .bind(gmail_id)
+    .bind("t1")
+    .bind(subject)
+    .bind(internal_date)
+    .bind(in_inbox)
+    .bind("2026-07-11T00:00:00.000Z")
+    .execute(core.pool())
+    .await
+    .expect("seed subject");
+}
+
+fn filter(folder: MailFolder, account_id: Option<&str>, query: Option<&str>) -> MailFilter {
+    MailFilter {
+        folder,
+        account_id: account_id.map(str::to_owned),
+        query: query.map(str::to_owned),
+        limit: None,
+    }
+}
+
+#[tokio::test]
+async fn list_filters_by_folder_account_and_query() {
+    let harness = harness().await;
+    let a = todo_gmail::store::insert_account(harness.core.pool(), "a@x.com")
+        .await
+        .unwrap();
+    let b = todo_gmail::store::insert_account(harness.core.pool(), "b@x.com")
+        .await
+        .unwrap();
+    seed_subject(&harness.core, &a.id, "m1", 1, "invoice due", 300).await;
+    seed_subject(&harness.core, &a.id, "m2", 0, "receipt", 200).await;
+    seed_subject(&harness.core, &b.id, "m3", 1, "hello", 100).await;
+
+    let inbox = harness
+        .service
+        .list(filter(MailFolder::Inbox, None, None))
+        .await
+        .unwrap();
+    assert_eq!(inbox.len(), 2);
+    // internal_date DESC 정렬: m1(300) 먼저.
+    assert_eq!(inbox[0].gmail_id, "m1");
+    assert_eq!(inbox[0].account_email, "a@x.com");
+
+    let archive = harness
+        .service
+        .list(filter(MailFolder::Archive, None, None))
+        .await
+        .unwrap();
+    assert_eq!(archive.len(), 1);
+    assert_eq!(archive[0].gmail_id, "m2");
+
+    let a_all = harness
+        .service
+        .list(filter(MailFolder::All, Some(&a.id), None))
+        .await
+        .unwrap();
+    assert_eq!(a_all.len(), 2);
+
+    let matched = harness
+        .service
+        .list(filter(MailFolder::Inbox, None, Some("invo")))
+        .await
+        .unwrap();
+    assert_eq!(matched.len(), 1);
+    assert_eq!(matched[0].gmail_id, "m1");
 }
 
 #[tokio::test]
