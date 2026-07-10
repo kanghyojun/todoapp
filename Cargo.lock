@@ -2669,6 +2669,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "todo-gmail"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "keyring",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "todo-core",
+ "tokio",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "todo-linear"
 version = "0.1.0"
 dependencies = [
