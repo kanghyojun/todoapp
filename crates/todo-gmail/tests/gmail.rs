@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tempfile::NamedTempFile;
 use todo_core::TodoCore;
 use todo_gmail::{GmailService, MailFilter, MailFolder, TokenStore, TokenStoreError};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[derive(Default)]
@@ -427,6 +427,72 @@ async fn list_filters_by_folder_account_and_query() {
         .unwrap();
     assert_eq!(matched.len(), 1);
     assert_eq!(matched[0].gmail_id, "m1");
+}
+
+async fn pending_outbox(core: &TodoCore) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM gmail_outbox WHERE completed_at IS NULL")
+        .fetch_one(core.pool())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn archive_optimistic_then_pushes_modify() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    mount_token(&harness.mock).await;
+    seed_message(&harness.core, &account.id, "m1", 1, 0).await;
+
+    harness.service.archive(&account.id, "m1").await.unwrap();
+    // 낙관적: 로컬은 즉시 inbox 에서 빠졌다.
+    assert_eq!(in_inbox_flag(&harness.core, &account.id, "m1").await, 0);
+    assert_eq!(pending_outbox(&harness.core).await, 1);
+
+    Mock::given(method("POST"))
+        .and(path("/gmail/v1/users/me/messages/m1/modify"))
+        .and(body_string_contains("removeLabelIds"))
+        .and(body_string_contains("INBOX"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "m1" })))
+        .mount(&harness.mock)
+        .await;
+
+    harness.service.process_outbox_once().await.unwrap();
+    assert_eq!(pending_outbox(&harness.core).await, 0);
+}
+
+#[tokio::test]
+async fn set_read_enqueues_and_pushes() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    mount_token(&harness.mock).await;
+    seed_message(&harness.core, &account.id, "m1", 1, 1).await;
+
+    harness.service.set_read(&account.id, "m1", true).await.unwrap();
+    // 읽음 처리: is_unread = 0
+    let is_unread: i64 =
+        sqlx::query_scalar("SELECT is_unread FROM gmail_messages WHERE account_id = ? AND gmail_id = 'm1'")
+            .bind(&account.id)
+            .fetch_one(harness.core.pool())
+            .await
+            .unwrap();
+    assert_eq!(is_unread, 0);
+
+    Mock::given(method("POST"))
+        .and(path("/gmail/v1/users/me/messages/m1/modify"))
+        .and(body_string_contains("removeLabelIds"))
+        .and(body_string_contains("UNREAD"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "m1" })))
+        .mount(&harness.mock)
+        .await;
+
+    harness.service.process_outbox_once().await.unwrap();
+    assert_eq!(pending_outbox(&harness.core).await, 0);
 }
 
 #[tokio::test]

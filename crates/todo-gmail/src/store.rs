@@ -1,5 +1,5 @@
 use chrono::{SecondsFormat, Utc};
-use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool};
 
 use crate::error::Error;
 use crate::model::{GmailAccount, MailBody, MailFilter, MailFolder, MailListItem};
@@ -292,6 +292,112 @@ pub(crate) async fn query_messages(
         .build_query_as::<MailListItem>()
         .fetch_all(pool)
         .await?)
+}
+
+pub(crate) async fn local_set_inbox(
+    pool: &SqlitePool,
+    account_id: &str,
+    gmail_id: &str,
+    in_inbox: bool,
+) -> Result<(), Error> {
+    sqlx::query(
+        "UPDATE gmail_messages SET in_inbox = ?, updated_at = ? \
+         WHERE account_id = ? AND gmail_id = ?",
+    )
+    .bind(i64::from(in_inbox))
+    .bind(now_string())
+    .bind(account_id)
+    .bind(gmail_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn local_set_unread(
+    pool: &SqlitePool,
+    account_id: &str,
+    gmail_id: &str,
+    is_unread: bool,
+) -> Result<(), Error> {
+    sqlx::query(
+        "UPDATE gmail_messages SET is_unread = ?, updated_at = ? \
+         WHERE account_id = ? AND gmail_id = ?",
+    )
+    .bind(i64::from(is_unread))
+    .bind(now_string())
+    .bind(account_id)
+    .bind(gmail_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct OutboxRow {
+    pub id: i64,
+    pub account_id: String,
+    pub gmail_id: String,
+    pub kind: String,
+    pub attempts: i64,
+}
+
+pub(crate) async fn enqueue_outbox(
+    pool: &SqlitePool,
+    account_id: &str,
+    gmail_id: &str,
+    kind: &str,
+) -> Result<(), Error> {
+    let now = now_string();
+    sqlx::query(
+        "INSERT OR IGNORE INTO gmail_outbox \
+         (account_id, gmail_id, kind, next_attempt_at, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(account_id)
+    .bind(gmail_id)
+    .bind(kind)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn ready_outbox(pool: &SqlitePool) -> Result<Vec<OutboxRow>, Error> {
+    Ok(sqlx::query_as::<_, OutboxRow>(
+        "SELECT id, account_id, gmail_id, kind, attempts FROM gmail_outbox \
+         WHERE completed_at IS NULL AND next_attempt_at <= ? \
+         ORDER BY created_at ASC, id ASC",
+    )
+    .bind(now_string())
+    .fetch_all(pool)
+    .await?)
+}
+
+pub(crate) async fn complete_outbox(pool: &SqlitePool, id: i64) -> Result<(), Error> {
+    sqlx::query("UPDATE gmail_outbox SET completed_at = ?, last_error = NULL WHERE id = ?")
+        .bind(now_string())
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn fail_outbox(
+    pool: &SqlitePool,
+    id: i64,
+    next_attempt_at: &str,
+    error: &str,
+) -> Result<(), Error> {
+    sqlx::query(
+        "UPDATE gmail_outbox SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? \
+         WHERE id = ? AND completed_at IS NULL",
+    )
+    .bind(next_attempt_at)
+    .bind(error)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, Error> {

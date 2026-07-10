@@ -3,15 +3,16 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
-use chrono::Utc;
+use chrono::{SecondsFormat, TimeDelta, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 use tokio::sync::{RwLock, broadcast};
 use todo_core::TodoCore;
 
 use crate::error::Error;
 use crate::model::{GmailAccount, MailBody, MailEvent, MailFilter, MailListItem, SyncSummary};
-use crate::store::MessageMeta;
+use crate::store::{MessageMeta, OutboxRow};
 use crate::tokens::TokenStore;
 use crate::{oauth, store};
 
@@ -221,6 +222,127 @@ impl GmailService {
         store::query_messages(self.core.pool(), &filter).await
     }
 
+    /// 보관: inbox 에서 뺀다. 로컬을 즉시 반영하고 Gmail 반영은 아웃박스로 미룬다.
+    pub async fn archive(&self, account_id: &str, gmail_id: &str) -> Result<(), Error> {
+        let pool = self.core.pool();
+        store::local_set_inbox(pool, account_id, gmail_id, false).await?;
+        store::enqueue_outbox(pool, account_id, gmail_id, "archive").await?;
+        self.emit();
+        Ok(())
+    }
+
+    /// 읽음/안읽음 토글. 로컬을 즉시 반영하고 Gmail 반영은 아웃박스로 미룬다.
+    pub async fn set_read(
+        &self,
+        account_id: &str,
+        gmail_id: &str,
+        read: bool,
+    ) -> Result<(), Error> {
+        let pool = self.core.pool();
+        store::local_set_unread(pool, account_id, gmail_id, !read).await?;
+        let kind = if read { "mark_read" } else { "mark_unread" };
+        store::enqueue_outbox(pool, account_id, gmail_id, kind).await?;
+        self.emit();
+        Ok(())
+    }
+
+    /// 아웃박스에 쌓인 라벨 변경을 Gmail 에 반영한다.
+    pub async fn process_outbox_once(&self) -> Result<(), Error> {
+        let pool = self.core.pool();
+        let rows = store::ready_outbox(pool).await?;
+        for row in rows {
+            let account = match store::fetch_account(pool, &row.account_id).await {
+                Ok(account) => account,
+                // 계정이 사라졌으면 이 항목은 의미가 없다.
+                Err(_) => {
+                    store::complete_outbox(pool, row.id).await?;
+                    continue;
+                }
+            };
+            let token = match self.access_token(&account.email).await {
+                Ok(token) => token,
+                // 토큰 문제는 재인증 후 재시도한다. 롤백하지 않는다.
+                Err(_) => {
+                    let next = next_attempt_at(row.attempts + 1);
+                    store::fail_outbox(pool, row.id, &next, "authentication required").await?;
+                    continue;
+                }
+            };
+            match self.push_modify(&token, &row).await {
+                Ok(()) => store::complete_outbox(pool, row.id).await?,
+                Err(error) if error.is_retryable() => {
+                    let next = next_attempt_at(row.attempts + 1);
+                    store::fail_outbox(pool, row.id, &next, &error.safe_message()).await?;
+                }
+                Err(_) => {
+                    // 비재시도 실패: 로컬을 되돌리고 항목을 종료한다.
+                    self.rollback_local(&row).await?;
+                    store::complete_outbox(pool, row.id).await?;
+                    self.emit();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn push_modify(&self, token: &str, row: &OutboxRow) -> Result<(), Error> {
+        let body: Value = match row.kind.as_str() {
+            "archive" => json!({ "removeLabelIds": ["INBOX"] }),
+            "mark_read" => json!({ "removeLabelIds": ["UNREAD"] }),
+            "mark_unread" => json!({ "addLabelIds": ["UNREAD"] }),
+            other => {
+                return Err(Error::InvalidInput(format!("unknown outbox kind: {other}")));
+            }
+        };
+        let url = format!("{}/users/me/messages/{}/modify", self.gmail_base, row.gmail_id);
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| Error::Remote {
+                message: "could not reach Gmail".to_owned(),
+                retryable: true,
+            })?;
+        let status = response.status();
+        // 원격에서 이미 사라진 메시지는 반영할 것이 없으니 성공으로 본다.
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        // 토큰 거부는 재인증 후 재시도해야 하므로 재시도 대상으로 둔다.
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::Remote {
+                message: "Gmail rejected the token".to_owned(),
+                retryable: true,
+            });
+        }
+        if !status.is_success() {
+            return Err(Error::Remote {
+                message: format!("Gmail modify returned HTTP {status}"),
+                retryable: status.is_server_error()
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+            });
+        }
+        Ok(())
+    }
+
+    async fn rollback_local(&self, row: &OutboxRow) -> Result<(), Error> {
+        let pool = self.core.pool();
+        match row.kind.as_str() {
+            "archive" => store::local_set_inbox(pool, &row.account_id, &row.gmail_id, true).await?,
+            "mark_read" => {
+                store::local_set_unread(pool, &row.account_id, &row.gmail_id, true).await?
+            }
+            "mark_unread" => {
+                store::local_set_unread(pool, &row.account_id, &row.gmail_id, false).await?
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// 본문을 반환한다. 캐시에 있으면 즉시, 없으면 Gmail 에서 페치해 캐시한다.
     pub async fn get_body(&self, account_id: &str, gmail_id: &str) -> Result<MailBody, Error> {
         let pool = self.core.pool();
@@ -357,6 +479,18 @@ impl GmailService {
     fn emit(&self) {
         let _ = self.events.send(MailEvent::Changed);
     }
+}
+
+/// attempt 회차에 맞춘 재시도 시각. Linear 아웃박스와 같은 백오프 곡선.
+fn next_attempt_at(attempt: i64) -> String {
+    let seconds = match attempt {
+        i64::MIN..=1 => 5,
+        2 => 15,
+        3 => 60,
+        4 => 300,
+        _ => 1_800,
+    };
+    (Utc::now() + TimeDelta::seconds(seconds)).to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
 fn urlencode(value: &str) -> String {
