@@ -186,7 +186,9 @@ export class HttpClient implements TodoClient {
   constructor(
     private readonly token: string,
     private readonly baseUrl = "http://127.0.0.1:2470/api/v1",
-    private readonly fetcher: Fetcher = fetch,
+    // fetch 를 그대로 담으면 this.fetcher(...) 가 이 인스턴스에 묶여
+    // 브라우저가 Illegal invocation 을 던진다. 감싸서 전역에 남겨둔다.
+    private readonly fetcher: Fetcher = (input, init) => fetch(input, init),
   ) {}
 
   async list(filter: Filter): Promise<Todo[]> {

@@ -15,6 +15,32 @@ const TODO = {
 };
 
 describe("HttpClient", () => {
+  // 브라우저의 fetch 는 this 가 window 가 아니면 Illegal invocation 을 던진다.
+  // 기본 fetcher 를 필드에 그냥 담으면 this.fetcher(...) 가 클라이언트에 묶인다.
+  it("does not bind the default fetcher to the client instance", async () => {
+    const receivers: unknown[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = function (this: unknown): Promise<Response> {
+      receivers.push(this);
+      return Promise.resolve(
+        new Response("[]", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    } as typeof globalThis.fetch;
+
+    try {
+      const client = new HttpClient("token", "http://example.test/api/v1");
+      await client.list({});
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    expect(receivers).toHaveLength(1);
+    expect(receivers[0]).not.toBeInstanceOf(HttpClient);
+  });
+
   it("maps 404 to NotFoundError and preserves the server message", async () => {
     const fetcher = vi.fn(() =>
       Promise.resolve(
