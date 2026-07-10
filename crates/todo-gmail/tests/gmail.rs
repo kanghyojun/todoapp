@@ -307,6 +307,48 @@ async fn expired_history_falls_back_to_initial_sync() {
 }
 
 #[tokio::test]
+async fn get_body_fetches_and_caches() {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    mount_token(&harness.mock).await;
+    seed_message(&harness.core, &account.id, "m1", 1, 1).await;
+
+    let text_data = URL_SAFE_NO_PAD.encode("Hello world");
+    let html_data = URL_SAFE_NO_PAD.encode("<p>hi</p>");
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages/m1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "m1", "threadId": "t1",
+            "payload": { "mimeType": "multipart/alternative", "parts": [
+                { "mimeType": "text/plain", "body": { "data": text_data } },
+                { "mimeType": "text/html", "body": { "data": html_data } }
+            ] }
+        })))
+        .mount(&harness.mock)
+        .await;
+
+    let body = harness.service.get_body(&account.id, "m1").await.unwrap();
+    assert_eq!(body.body_text.as_deref(), Some("Hello world"));
+    assert_eq!(body.body_html.as_deref(), Some("<p>hi</p>"));
+
+    // 본문이 캐시에 저장돼 body_fetched_at 이 채워졌다.
+    let fetched: Option<String> = sqlx::query_scalar(
+        "SELECT body_fetched_at FROM gmail_messages WHERE account_id = ? AND gmail_id = 'm1'",
+    )
+    .bind(&account.id)
+    .fetch_one(harness.core.pool())
+    .await
+    .unwrap();
+    assert!(fetched.is_some());
+}
+
+#[tokio::test]
 async fn migration_creates_gmail_tables() {
     let (_db, core) = connect().await;
     let count: i64 = sqlx::query_scalar(

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
 use chrono::Utc;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -8,7 +10,7 @@ use tokio::sync::{RwLock, broadcast};
 use todo_core::TodoCore;
 
 use crate::error::Error;
-use crate::model::{GmailAccount, MailEvent, SyncSummary};
+use crate::model::{GmailAccount, MailBody, MailEvent, SyncSummary};
 use crate::store::MessageMeta;
 use crate::tokens::TokenStore;
 use crate::{oauth, store};
@@ -214,6 +216,53 @@ impl GmailService {
         Ok(summary)
     }
 
+    /// 본문을 반환한다. 캐시에 있으면 즉시, 없으면 Gmail 에서 페치해 캐시한다.
+    pub async fn get_body(&self, account_id: &str, gmail_id: &str) -> Result<MailBody, Error> {
+        let pool = self.core.pool();
+        if let Some(body) = store::read_body(pool, account_id, gmail_id).await? {
+            return Ok(body);
+        }
+        let account = store::fetch_account(pool, account_id).await?;
+        let token = self.access_token(&account.email).await?;
+        let (text, html) = self.fetch_body(&token, gmail_id).await?;
+        store::write_body(pool, account_id, gmail_id, text.as_deref(), html.as_deref()).await?;
+        Ok(MailBody {
+            gmail_id: gmail_id.to_owned(),
+            body_text: text,
+            body_html: html,
+        })
+    }
+
+    /// 커서 주변 메일 본문을 미리 당긴다. 개별 실패는 무시하고 진행한다.
+    pub async fn prefetch_bodies(
+        &self,
+        account_id: &str,
+        gmail_ids: &[String],
+    ) -> Result<(), Error> {
+        for gmail_id in gmail_ids {
+            let _ = self.get_body(account_id, gmail_id).await;
+        }
+        Ok(())
+    }
+
+    async fn fetch_body(
+        &self,
+        token: &str,
+        gmail_id: &str,
+    ) -> Result<(Option<String>, Option<String>), Error> {
+        let url = format!(
+            "{}/users/me/messages/{}?format=full",
+            self.gmail_base, gmail_id,
+        );
+        let message: FullMessage = self.get_json(token, &url).await?;
+        let mut text = None;
+        let mut html = None;
+        if let Some(payload) = &message.payload {
+            walk_part(payload, &mut text, &mut html);
+        }
+        Ok((text, html))
+    }
+
     async fn fetch_message_meta(&self, token: &str, id: &str) -> Result<MessageMeta, Error> {
         let url = format!(
             "{}/users/me/messages/{}?format=metadata&metadataHeaders=From&metadataHeaders=Subject",
@@ -401,6 +450,58 @@ struct Payload {
 struct Header {
     name: String,
     value: String,
+}
+
+#[derive(Deserialize)]
+struct FullMessage {
+    #[serde(default)]
+    payload: Option<BodyPart>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BodyPart {
+    #[serde(default)]
+    mime_type: String,
+    #[serde(default)]
+    body: Option<PartBody>,
+    #[serde(default)]
+    parts: Vec<BodyPart>,
+}
+
+#[derive(Deserialize)]
+struct PartBody {
+    #[serde(default)]
+    data: Option<String>,
+}
+
+/// MIME 트리를 순회해 첫 text/plain·text/html 본문을 채운다.
+fn walk_part(part: &BodyPart, text: &mut Option<String>, html: &mut Option<String>) {
+    if part.mime_type == "text/plain" && text.is_none() {
+        if let Some(body) = &part.body {
+            if let Some(data) = &body.data {
+                *text = decode_base64url(data);
+            }
+        }
+    } else if part.mime_type == "text/html" && html.is_none() {
+        if let Some(body) = &part.body {
+            if let Some(data) = &body.data {
+                *html = decode_base64url(data);
+            }
+        }
+    }
+    for child in &part.parts {
+        walk_part(child, text, html);
+    }
+}
+
+fn decode_base64url(data: &str) -> Option<String> {
+    let cleaned: String = data.split_whitespace().collect();
+    let bytes = URL_SAFE_NO_PAD
+        .decode(cleaned.trim_end_matches('='))
+        .or_else(|_| URL_SAFE.decode(&cleaned))
+        .ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 impl GmailMessage {

@@ -2,7 +2,7 @@ use chrono::{SecondsFormat, Utc};
 use sqlx::SqlitePool;
 
 use crate::error::Error;
-use crate::model::GmailAccount;
+use crate::model::{GmailAccount, MailBody};
 
 const COLORS: [&str; 6] = [
     "#268bd2", "#2aa198", "#859900", "#b58900", "#d33682", "#cb4b16",
@@ -200,6 +200,52 @@ pub(crate) async fn delete_message(
         .bind(gmail_id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+/// 본문이 이미 페치돼 있으면 반환한다. 미페치(body_fetched_at NULL)면 None.
+pub(crate) async fn read_body(
+    pool: &SqlitePool,
+    account_id: &str,
+    gmail_id: &str,
+) -> Result<Option<MailBody>, Error> {
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT body_text, body_html, body_fetched_at FROM gmail_messages \
+         WHERE account_id = ? AND gmail_id = ?",
+    )
+    .bind(account_id)
+    .bind(gmail_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(text, html, fetched)| {
+        fetched.map(|_| MailBody {
+            gmail_id: gmail_id.to_owned(),
+            body_text: text,
+            body_html: html,
+        })
+    }))
+}
+
+pub(crate) async fn write_body(
+    pool: &SqlitePool,
+    account_id: &str,
+    gmail_id: &str,
+    text: Option<&str>,
+    html: Option<&str>,
+) -> Result<(), Error> {
+    let now = now_string();
+    sqlx::query(
+        "UPDATE gmail_messages SET body_text = ?, body_html = ?, body_fetched_at = ?, \
+         updated_at = ? WHERE account_id = ? AND gmail_id = ?",
+    )
+    .bind(text)
+    .bind(html)
+    .bind(&now)
+    .bind(&now)
+    .bind(account_id)
+    .bind(gmail_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
