@@ -182,6 +182,130 @@ async fn initial_sync_fetches_and_stores_messages() {
     assert_eq!(refreshed.history_id.as_deref(), Some("999"));
 }
 
+async fn seed_message(
+    core: &TodoCore,
+    account_id: &str,
+    gmail_id: &str,
+    in_inbox: i64,
+    is_unread: i64,
+) {
+    sqlx::query(
+        "INSERT INTO gmail_messages \
+         (account_id, gmail_id, thread_id, internal_date, in_inbox, is_unread, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(account_id)
+    .bind(gmail_id)
+    .bind("t1")
+    .bind(1_700_000_000_000_i64)
+    .bind(in_inbox)
+    .bind(is_unread)
+    .bind("2026-07-11T00:00:00.000Z")
+    .execute(core.pool())
+    .await
+    .expect("seed message");
+}
+
+async fn set_account_history(core: &TodoCore, account_id: &str, history_id: &str) {
+    sqlx::query("UPDATE gmail_accounts SET history_id = ? WHERE id = ?")
+        .bind(history_id)
+        .bind(account_id)
+        .execute(core.pool())
+        .await
+        .expect("set history");
+}
+
+async fn in_inbox_flag(core: &TodoCore, account_id: &str, gmail_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT in_inbox FROM gmail_messages WHERE account_id = ? AND gmail_id = ?")
+        .bind(account_id)
+        .bind(gmail_id)
+        .fetch_one(core.pool())
+        .await
+        .expect("read flag")
+}
+
+#[tokio::test]
+async fn incremental_sync_applies_label_removal() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    mount_token(&harness.mock).await;
+    seed_message(&harness.core, &account.id, "m1", 1, 1).await;
+    set_account_history(&harness.core, &account.id, "100").await;
+
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "history": [
+                { "id": "100", "labelsRemoved": [
+                    { "message": { "id": "m1" }, "labelIds": ["INBOX"] }
+                ] }
+            ],
+            "historyId": "101"
+        })))
+        .mount(&harness.mock)
+        .await;
+
+    harness.service.sync_account(&account.id).await.unwrap();
+    assert_eq!(in_inbox_flag(&harness.core, &account.id, "m1").await, 0);
+
+    let refreshed = todo_gmail::store::fetch_account(harness.core.pool(), &account.id)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.history_id.as_deref(), Some("101"));
+}
+
+#[tokio::test]
+async fn expired_history_falls_back_to_initial_sync() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    set_account_history(&harness.core, &account.id, "5").await;
+    mount_token(&harness.mock).await;
+
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/history"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [ { "id": "m9", "threadId": "t9" } ]
+        })))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages/m9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "m9", "threadId": "t9", "labelIds": ["INBOX"],
+            "snippet": "s", "internalDate": "1700000000001",
+            "payload": { "headers": [ { "name": "Subject", "value": "recovered" } ] }
+        })))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "emailAddress": "me@x.com", "historyId": "7"
+        })))
+        .mount(&harness.mock)
+        .await;
+
+    harness.service.sync_account(&account.id).await.unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND gmail_id = 'm9'")
+            .bind(&account.id)
+            .fetch_one(harness.core.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
+}
+
 #[tokio::test]
 async fn migration_creates_gmail_tables() {
     let (_db, core) = connect().await;

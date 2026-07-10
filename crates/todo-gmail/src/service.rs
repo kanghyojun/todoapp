@@ -106,10 +106,86 @@ impl GmailService {
         store::fetch_account(self.core.pool(), &account.id).await
     }
 
-    /// 계정의 캐시된 메일을 최신화한다. history_id 가 없으면 초기 동기화.
+    /// 계정의 캐시된 메일을 최신화한다. history_id 가 있으면 증분, 없거나 만료면 초기.
     pub async fn sync_account(&self, account_id: &str) -> Result<SyncSummary, Error> {
         let account = store::fetch_account(self.core.pool(), account_id).await?;
-        self.initial_sync(&account).await
+        if account.history_id.is_some() {
+            match self.incremental_sync(&account).await {
+                Err(Error::HistoryExpired) => self.initial_sync(&account).await,
+                other => other,
+            }
+        } else {
+            self.initial_sync(&account).await
+        }
+    }
+
+    async fn incremental_sync(&self, account: &GmailAccount) -> Result<SyncSummary, Error> {
+        let token = self.access_token(&account.email).await?;
+        let start = account
+            .history_id
+            .as_deref()
+            .ok_or(Error::HistoryExpired)?;
+        let url = format!(
+            "{}/users/me/history?startHistoryId={}\
+             &historyTypes=messageAdded&historyTypes=messageDeleted\
+             &historyTypes=labelAdded&historyTypes=labelRemoved",
+            self.gmail_base, start,
+        );
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|_| Error::Remote {
+                message: "could not reach Gmail".to_owned(),
+                retryable: true,
+            })?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(Error::HistoryExpired);
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::Unauthorized);
+        }
+        if !status.is_success() {
+            return Err(Error::Remote {
+                message: format!("Gmail history returned HTTP {status}"),
+                retryable: status.is_server_error()
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+            });
+        }
+        let body: HistoryResponse = response.json().await.map_err(|_| Error::Remote {
+            message: "Gmail history returned an invalid response".to_owned(),
+            retryable: true,
+        })?;
+        let pool = self.core.pool();
+        let mut summary = SyncSummary::default();
+        for record in body.history {
+            for added in record.messages_added {
+                let meta = self.fetch_message_meta(&token, &added.message.id).await?;
+                store::upsert_message_meta(pool, &account.id, &meta).await?;
+                summary.fetched += 1;
+                summary.updated += 1;
+            }
+            for deleted in record.messages_deleted {
+                store::delete_message(pool, &account.id, &deleted.message.id).await?;
+                summary.updated += 1;
+            }
+            for change in record.labels_added {
+                store::apply_label_change(pool, &account.id, &change.message.id, &change.label_ids, true).await?;
+                summary.updated += 1;
+            }
+            for change in record.labels_removed {
+                store::apply_label_change(pool, &account.id, &change.message.id, &change.label_ids, false).await?;
+                summary.updated += 1;
+            }
+        }
+        if let Some(history_id) = body.history_id {
+            store::set_history_id(pool, &account.id, &history_id).await?;
+        }
+        self.emit();
+        Ok(summary)
     }
 
     async fn initial_sync(&self, account: &GmailAccount) -> Result<SyncSummary, Error> {
@@ -278,6 +354,41 @@ struct GmailMessage {
     internal_date: String,
     #[serde(default)]
     payload: Option<Payload>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryResponse {
+    #[serde(default)]
+    history: Vec<HistoryRecord>,
+    #[serde(default)]
+    history_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryRecord {
+    #[serde(default)]
+    messages_added: Vec<MessageEnvelope>,
+    #[serde(default)]
+    messages_deleted: Vec<MessageEnvelope>,
+    #[serde(default)]
+    labels_added: Vec<LabelChange>,
+    #[serde(default)]
+    labels_removed: Vec<LabelChange>,
+}
+
+#[derive(Deserialize)]
+struct MessageEnvelope {
+    message: MessageRef,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LabelChange {
+    message: MessageRef,
+    #[serde(default)]
+    label_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]

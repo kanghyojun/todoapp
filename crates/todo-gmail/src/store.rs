@@ -153,6 +153,56 @@ pub(crate) async fn upsert_message_meta(
     Ok(())
 }
 
+/// history 의 labelsAdded/labelsRemoved 를 로컬에 반영한다. INBOX/UNREAD 만 관심 대상.
+pub(crate) async fn apply_label_change(
+    pool: &SqlitePool,
+    account_id: &str,
+    gmail_id: &str,
+    labels: &[String],
+    added: bool,
+) -> Result<(), Error> {
+    let value = i64::from(added);
+    let now = now_string();
+    if labels.iter().any(|label| label == "INBOX") {
+        sqlx::query(
+            "UPDATE gmail_messages SET in_inbox = ?, updated_at = ? \
+             WHERE account_id = ? AND gmail_id = ?",
+        )
+        .bind(value)
+        .bind(&now)
+        .bind(account_id)
+        .bind(gmail_id)
+        .execute(pool)
+        .await?;
+    }
+    if labels.iter().any(|label| label == "UNREAD") {
+        sqlx::query(
+            "UPDATE gmail_messages SET is_unread = ?, updated_at = ? \
+             WHERE account_id = ? AND gmail_id = ?",
+        )
+        .bind(value)
+        .bind(&now)
+        .bind(account_id)
+        .bind(gmail_id)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn delete_message(
+    pool: &SqlitePool,
+    account_id: &str,
+    gmail_id: &str,
+) -> Result<(), Error> {
+    sqlx::query("DELETE FROM gmail_messages WHERE account_id = ? AND gmail_id = ?")
+        .bind(account_id)
+        .bind(gmail_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, Error> {
     Ok(
         sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
