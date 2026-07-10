@@ -16,6 +16,13 @@ import {
   type KeyEvent as ShortcutKeyEvent,
   type ShortcutScope,
 } from "./keyboard";
+import {
+  applyPreference,
+  cyclePreference,
+  readPreference,
+  savePreference,
+  type ThemePreference,
+} from "./theme";
 import { UndoStack, type InverseAction } from "./undo";
 
 interface AppProps {
@@ -25,7 +32,7 @@ interface AppProps {
 
 type Overlay = "palette" | "help" | null;
 
-type PaletteCommand = "create" | "pull-linear" | "help";
+type PaletteCommand = "create" | "pull-linear" | "help" | "theme";
 
 type PaletteItem =
   | { kind: "command"; id: PaletteCommand; label: string; hint: string }
@@ -53,8 +60,15 @@ const COMMANDS: readonly PaletteItem[] = [
     label: "Pull Linear issues",
     hint: "M5",
   },
+  { kind: "command", id: "theme", label: "Toggle theme", hint: "" },
   { kind: "command", id: "help", label: "Shortcut help", hint: "?" },
 ];
+
+const THEME_LABELS: Record<ThemePreference, string> = {
+  auto: "자동",
+  light: "밝게",
+  dark: "어둡게",
+};
 
 const SHORTCUTS: readonly [string, string][] = [
   ["j / k", "아래 / 위로 이동"],
@@ -102,6 +116,7 @@ export const App: Component<AppProps> = (props) => {
   const [chordExpiresAt, setChordExpiresAt] = createSignal<number | null>(null);
   const [paletteQuery, setPaletteQuery] = createSignal("");
   const [paletteTodos, setPaletteTodos] = createSignal<Todo[]>([]);
+  const [theme, setTheme] = createSignal<ThemePreference>(readPreference(localStorage));
   const undo = new UndoStack();
   const rowElements = new Map<string, HTMLButtonElement>();
   let editorInput: HTMLInputElement | undefined;
@@ -396,19 +411,34 @@ export const App: Component<AppProps> = (props) => {
     }
     const command = item.id;
     closeOverlay();
-    if (command === "create") {
-      beginInput("create", "", []);
-    } else if (command === "help") {
-      setOverlay("help");
-    } else {
-      try {
-        const result = await props.client.pullLinear();
-        setToast(`Linear: 새로 ${result.created}건, 건너뜀 ${result.skipped}건`);
-        await load();
-      } catch (reason) {
-        setError(messageFrom(reason));
-      }
+    switch (command) {
+      case "create":
+        beginInput("create", "", []);
+        break;
+      case "help":
+        setOverlay("help");
+        break;
+      case "theme":
+        toggleTheme();
+        break;
+      case "pull-linear":
+        try {
+          const result = await props.client.pullLinear();
+          setToast(`Linear: 새로 ${result.created}건, 건너뜀 ${result.skipped}건`);
+          await load();
+        } catch (reason) {
+          setError(messageFrom(reason));
+        }
+        break;
     }
+  }
+
+  function toggleTheme(): void {
+    const next = cyclePreference(theme());
+    setTheme(next);
+    applyPreference(document.documentElement, next);
+    savePreference(localStorage, next);
+    setToast(`테마: ${THEME_LABELS[next]}`);
   }
 
   function toggleSelection(id: string): void {
@@ -567,7 +597,17 @@ export const App: Component<AppProps> = (props) => {
     <div class="app-shell">
       <header class="topbar">
         <div class="brand">local/todo</div>
-        <div class="shortcut-hint"><kbd>⌘K</kbd> commands · <kbd>?</kbd> help</div>
+        <div class="topbar-end">
+          <div class="shortcut-hint"><kbd>⌘K</kbd> commands · <kbd>?</kbd> help</div>
+          <button
+            type="button"
+            class="theme-toggle"
+            aria-label={`테마 전환. 지금은 ${THEME_LABELS[theme()]}`}
+            onClick={toggleTheme}
+          >
+            {THEME_LABELS[theme()]}
+          </button>
+        </div>
       </header>
 
       <nav class="tabbar" role="tablist" aria-label="앱 탭">

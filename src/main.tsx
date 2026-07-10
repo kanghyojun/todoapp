@@ -3,7 +3,11 @@ import { isTauri } from "@tauri-apps/api/core";
 import { App } from "./App";
 import { TauriClient } from "./client";
 import { pickClient } from "./startup";
+import { applyPreference, readPreference } from "./theme";
 import "./styles.css";
+
+// 렌더보다 먼저 건다. 그래야 저장된 테마와 OS 테마가 한 번 깜빡이지 않는다.
+applyPreference(document.documentElement, readPreference(localStorage));
 
 const root = document.getElementById("root");
 

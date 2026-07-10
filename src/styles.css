@@ -1,19 +1,51 @@
+/*
+ * Solarized. 바탕은 표준 그대로, 글자는 한 단계 진하게.
+ *
+ * Solarized 가 정한 보조 텍스트(라이트의 base1)는 배경 대비가 2.5:1 이다.
+ * 이 앱은 우선순위·상태·날짜를 11px 로 깔기 때문에 그대로 쓰면 안 읽힌다.
+ * 그래서 본문을 base01/base1, 보조를 base00/base0 으로 한 칸씩 올렸다.
+ * 셋 다 Solarized 안의 색이고 셋 다 WCAG AA 를 넘긴다.
+ *
+ * data-theme 이 없으면 OS 설정을 따른다. 그게 auto 다.
+ */
 :root {
-  color: #e8e8e3;
-  background: #101110;
+  color-scheme: light dark;
+
+  /* 바탕: base3/base2 (light), base03/base02 (dark) */
+  --bg: light-dark(#fdf6e3, #002b36);
+  --bg-raised: light-dark(#eee8d5, #073642);
+
+  /* 글자: base02/base01/base00 (light), base2/base1/base0 (dark) */
+  --text-strong: light-dark(#073642, #eee8d5);
+  --text: light-dark(#586e75, #93a1a1);
+  --muted: light-dark(#657b83, #839496);
+
+  /* 강조 넷은 두 테마가 공유한다. Solarized 의 원래 의도다. */
+  --accent: #859900;
+  --info: #268bd2;
+  --warning: #b58900;
+  --danger: #dc322f;
+
+  /* 나머지는 위에서 뽑는다. 테마를 바꿔도 알아서 따라온다. */
+  --border: color-mix(in srgb, var(--muted) 45%, var(--bg));
+  --border-subtle: color-mix(in srgb, var(--muted) 22%, var(--bg));
+  --border-strong: var(--muted);
+  --row-selected: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  --raised-hover: color-mix(in srgb, var(--muted) 15%, var(--bg-raised));
+  --danger-bg: color-mix(in srgb, var(--danger) 12%, var(--bg));
+  --danger-border: color-mix(in srgb, var(--danger) 45%, var(--bg));
+  --backdrop: light-dark(rgb(0 43 54 / 32%), rgb(0 20 26 / 72%));
+  --shadow: light-dark(rgb(88 110 117 / 22%), rgb(0 0 0 / 45%));
+
+  color: var(--text);
+  background: var(--bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --background: #101110;
-  --surface: #161816;
-  --surface-raised: #1c1f1c;
-  --border: #303530;
-  --muted: #8e978d;
-  --text: #e8e8e3;
-  --accent: #b9f27c;
-  --danger: #ff938a;
-  --warning: #f0c674;
 }
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 
@@ -21,7 +53,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background: var(--background);
+  background: var(--bg);
 }
 
 button,
@@ -55,12 +87,35 @@ kbd {
   height: 44px;
   padding: 0 24px;
   justify-content: space-between;
+  gap: 16px;
   border-bottom: 1px solid var(--border);
   color: var(--muted);
   font-size: 12px;
 }
 
 .brand { color: var(--accent); }
+
+.topbar-end {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+
+.theme-toggle {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
 
 .tabbar {
   height: 42px;
@@ -74,6 +129,7 @@ kbd {
   border: 0;
   border-bottom: 2px solid var(--accent);
   background: transparent;
+  color: var(--text-strong);
   font-weight: 700;
 }
 
@@ -101,9 +157,9 @@ kbd {
 }
 
 .filter-chip.active {
-  border-color: #687267;
-  background: var(--surface-raised);
-  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--text-strong);
 }
 
 .selection-count {
@@ -115,8 +171,8 @@ kbd {
 .error-banner {
   margin: 0 0 12px;
   padding: 10px 12px;
-  border: 1px solid #6d3734;
-  background: #291918;
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
   color: var(--danger);
   font-size: 12px;
 }
@@ -124,7 +180,7 @@ kbd {
 .list-section {
   overflow: hidden;
   border: 1px solid var(--border);
-  background: var(--surface);
+  background: var(--bg);
 }
 
 .todo-row {
@@ -135,7 +191,7 @@ kbd {
   min-height: 40px;
   padding: 0 12px;
   border: 0;
-  border-bottom: 1px solid #252825;
+  border-bottom: 1px solid var(--border-subtle);
   background: transparent;
   text-align: left;
 }
@@ -145,11 +201,11 @@ button.todo-row { cursor: pointer; }
 .todo-row:last-child { border-bottom: 0; }
 
 .todo-row:hover,
-.todo-row.current { background: var(--surface-raised); }
+.todo-row.current { background: var(--bg-raised); }
 
 .todo-row.current { box-shadow: inset 2px 0 var(--accent); }
 
-.todo-row.selected { background: #20271d; }
+.todo-row.selected { background: var(--row-selected); }
 
 .todo-row.completed .todo-title {
   color: var(--muted);
@@ -160,6 +216,7 @@ button.todo-row { cursor: pointer; }
 
 .todo-title {
   overflow: hidden;
+  color: var(--text-strong);
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
@@ -174,11 +231,11 @@ button.todo-row { cursor: pointer; }
 
 .priority-urgent { color: var(--danger); }
 .priority-high { color: var(--warning); }
-.status-in_progress { color: #86c7ff; }
+.status-in_progress { color: var(--info); }
 .status-done { color: var(--accent); }
 
 .inline-create,
-.inline-edit { background: #1c231a; }
+.inline-edit { background: var(--bg-raised); }
 
 .inline-create { grid-template-columns: 22px minmax(180px, 1fr) auto; }
 .inline-edit { grid-template-columns: 22px minmax(180px, 1fr) auto; }
@@ -189,9 +246,9 @@ button.todo-row { cursor: pointer; }
 .palette input {
   min-width: 0;
   height: 30px;
-  border: 1px solid #4a5548;
-  background: #111411;
-  color: var(--text);
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text-strong);
   padding: 0 9px;
 }
 
@@ -223,7 +280,7 @@ button.todo-row { cursor: pointer; }
   width: min(420px, 100vw);
   padding: 22px;
   border-left: 1px solid var(--border);
-  background: #151715;
+  background: var(--bg-raised);
   transform: translateX(100%);
   opacity: 0;
   pointer-events: none;
@@ -245,13 +302,14 @@ button.todo-row { cursor: pointer; }
 
 .detail-panel h1 {
   margin: 28px 0 12px;
+  color: var(--text-strong);
   font-size: 22px;
   line-height: 1.35;
 }
 
 .description {
   min-height: 80px;
-  color: #b8bdb6;
+  color: var(--text);
   font: 14px/1.65 system-ui, sans-serif;
   white-space: pre-wrap;
 }
@@ -265,7 +323,7 @@ button.todo-row { cursor: pointer; }
   grid-template-columns: 100px 1fr;
   gap: 16px;
   padding: 10px 0;
-  border-bottom: 1px solid #292c29;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 dt { color: var(--muted); }
@@ -278,15 +336,15 @@ dd { margin: 0; overflow-wrap: anywhere; }
   display: grid;
   place-items: start center;
   padding-top: 12vh;
-  background: rgb(5 6 5 / 72%);
+  background: var(--backdrop);
 }
 
 .palette,
 .help-dialog {
   width: min(620px, calc(100vw - 32px));
-  border: 1px solid #424842;
-  background: var(--surface-raised);
-  box-shadow: 0 18px 60px rgb(0 0 0 / 45%);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  box-shadow: 0 18px 60px var(--shadow);
 }
 
 .palette { padding: 10px; }
@@ -305,7 +363,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 }
 
 .palette-results button.active,
-.palette-results button:hover { background: #293028; }
+.palette-results button:hover { background: var(--raised-hover); }
 .palette-results small { color: var(--muted); }
 .palette-empty { padding: 18px 10px; color: var(--muted); }
 
@@ -319,9 +377,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
   left: 50%;
   bottom: 24px;
   padding: 10px 14px;
-  border: 1px solid #566052;
-  background: #20251f;
-  color: var(--text);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--text-strong);
   transform: translateX(-50%);
   font-size: 12px;
 }
@@ -331,7 +389,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   margin: 15vh auto;
   padding: 24px;
   border: 1px solid var(--border);
-  background: var(--surface);
+  background: var(--bg-raised);
   color: var(--text);
 }
 
@@ -340,7 +398,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   margin-top: 18px;
   padding: 12px;
   overflow-x: auto;
-  background: #090a09;
+  background: var(--bg);
   color: var(--accent);
 }
 
