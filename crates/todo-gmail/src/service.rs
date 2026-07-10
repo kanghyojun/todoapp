@@ -2,13 +2,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use tokio::sync::{RwLock, broadcast};
 use todo_core::TodoCore;
 
 use crate::error::Error;
-use crate::model::{GmailAccount, MailEvent};
+use crate::model::{GmailAccount, MailEvent, SyncSummary};
+use crate::store::MessageMeta;
 use crate::tokens::TokenStore;
 use crate::{oauth, store};
+
+const INITIAL_QUERY: &str = "-in:trash -in:spam newer_than:90d";
+const INITIAL_MAX_RESULTS: u32 = 200;
 
 const DEFAULT_OAUTH_BASE: &str = "https://oauth2.googleapis.com";
 const DEFAULT_GMAIL_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
@@ -100,6 +106,106 @@ impl GmailService {
         store::fetch_account(self.core.pool(), &account.id).await
     }
 
+    /// 계정의 캐시된 메일을 최신화한다. history_id 가 없으면 초기 동기화.
+    pub async fn sync_account(&self, account_id: &str) -> Result<SyncSummary, Error> {
+        let account = store::fetch_account(self.core.pool(), account_id).await?;
+        self.initial_sync(&account).await
+    }
+
+    async fn initial_sync(&self, account: &GmailAccount) -> Result<SyncSummary, Error> {
+        let token = self.access_token(&account.email).await?;
+        let url = format!(
+            "{}/users/me/messages?q={}&maxResults={}",
+            self.gmail_base,
+            urlencode(INITIAL_QUERY),
+            INITIAL_MAX_RESULTS,
+        );
+        let list: MessagesList = self.get_json(&token, &url).await?;
+        let mut summary = SyncSummary::default();
+        for (index, reference) in list.messages.iter().enumerate() {
+            let meta = self.fetch_message_meta(&token, &reference.id).await?;
+            store::upsert_message_meta(self.core.pool(), &account.id, &meta).await?;
+            summary.fetched += 1;
+            summary.updated += 1;
+            if index % 20 == 19 {
+                self.emit();
+            }
+        }
+        let profile =
+            oauth::fetch_profile(&self.client, &self.gmail_base, &token).await?;
+        store::set_history_id(self.core.pool(), &account.id, &profile.history_id).await?;
+        self.emit();
+        Ok(summary)
+    }
+
+    async fn fetch_message_meta(&self, token: &str, id: &str) -> Result<MessageMeta, Error> {
+        let url = format!(
+            "{}/users/me/messages/{}?format=metadata&metadataHeaders=From&metadataHeaders=Subject",
+            self.gmail_base, id,
+        );
+        let message: GmailMessage = self.get_json(token, &url).await?;
+        Ok(message.into_meta())
+    }
+
+    async fn access_token(&self, email: &str) -> Result<String, Error> {
+        let now = Utc::now().timestamp();
+        if let Some((token, expiry)) = self.access_cache.read().await.get(email).cloned() {
+            if expiry > now {
+                return Ok(token);
+            }
+        }
+        let (client_id, client_secret) = self.require_credentials().await?;
+        let refresh = self.tokens.get(email)?.ok_or(Error::NotConfigured)?;
+        match oauth::refresh_token(
+            &self.client,
+            &self.oauth_base,
+            &client_id,
+            &client_secret,
+            &refresh,
+        )
+        .await
+        {
+            Ok(response) => {
+                self.cache_access_token(email, &response.access_token, response.expires_in)
+                    .await;
+                Ok(response.access_token)
+            }
+            Err(Error::Unauthorized) => {
+                let _ = store::mark_needs_auth(self.core.pool(), email).await;
+                Err(Error::Unauthorized)
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    async fn get_json<T: DeserializeOwned>(&self, token: &str, url: &str) -> Result<T, Error> {
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_| Error::Remote {
+                message: "could not reach Gmail".to_owned(),
+                retryable: true,
+            })?;
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::Unauthorized);
+        }
+        if !status.is_success() {
+            return Err(Error::Remote {
+                message: format!("Gmail returned HTTP {status}"),
+                retryable: status.is_server_error()
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+            });
+        }
+        response.json().await.map_err(|_| Error::Remote {
+            message: "Gmail returned an invalid response".to_owned(),
+            retryable: true,
+        })
+    }
+
     async fn require_credentials(&self) -> Result<(String, String), Error> {
         let id = store::get_setting(self.core.pool(), "gmail.client_id")
             .await?
@@ -120,5 +226,100 @@ impl GmailService {
 
     fn emit(&self) {
         let _ = self.events.send(MailEvent::Changed);
+    }
+}
+
+fn urlencode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// `Name <addr@host>` 또는 `addr@host` 형식에서 이름과 주소를 분리한다.
+fn parse_from(value: &str) -> (String, String) {
+    let value = value.trim();
+    if let Some(start) = value.rfind('<') {
+        if let Some(end) = value[start..].find('>') {
+            let email = value[start + 1..start + end].trim().to_owned();
+            let name = value[..start].trim().trim_matches('"').trim().to_owned();
+            return (name, email);
+        }
+    }
+    (String::new(), value.to_owned())
+}
+
+#[derive(Deserialize)]
+struct MessagesList {
+    #[serde(default)]
+    messages: Vec<MessageRef>,
+}
+
+#[derive(Deserialize)]
+struct MessageRef {
+    id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GmailMessage {
+    id: String,
+    thread_id: String,
+    #[serde(default)]
+    label_ids: Vec<String>,
+    #[serde(default)]
+    snippet: String,
+    #[serde(default)]
+    internal_date: String,
+    #[serde(default)]
+    payload: Option<Payload>,
+}
+
+#[derive(Deserialize)]
+struct Payload {
+    #[serde(default)]
+    headers: Vec<Header>,
+}
+
+#[derive(Deserialize)]
+struct Header {
+    name: String,
+    value: String,
+}
+
+impl GmailMessage {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.payload.as_ref().and_then(|payload| {
+            payload
+                .headers
+                .iter()
+                .find(|header| header.name.eq_ignore_ascii_case(name))
+                .map(|header| header.value.as_str())
+        })
+    }
+
+    fn into_meta(self) -> MessageMeta {
+        let from = self.header("From").unwrap_or_default().to_owned();
+        let (from_name, from_email) = parse_from(&from);
+        let subject = self.header("Subject").unwrap_or_default().to_owned();
+        let internal_date = self.internal_date.parse::<i64>().unwrap_or(0);
+        let in_inbox = self.label_ids.iter().any(|label| label == "INBOX");
+        let is_unread = self.label_ids.iter().any(|label| label == "UNREAD");
+        MessageMeta {
+            gmail_id: self.id,
+            thread_id: self.thread_id,
+            from_name,
+            from_email,
+            subject,
+            snippet: self.snippet,
+            internal_date,
+            in_inbox,
+            is_unread,
+        }
     }
 }

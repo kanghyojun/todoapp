@@ -103,6 +103,85 @@ async fn complete_auth_stores_account_and_refresh_token() {
     assert_eq!(accounts.len(), 1);
 }
 
+async fn mount_token(mock: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "at-1", "refresh_token": "rt-1", "expires_in": 3600
+        })))
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn initial_sync_fetches_and_stores_messages() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    mount_token(&harness.mock).await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [ { "id": "m1", "threadId": "t1" } ],
+            "resultSizeEstimate": 1
+        })))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages/m1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "m1", "threadId": "t1",
+            "labelIds": ["INBOX", "UNREAD"],
+            "snippet": "hello there",
+            "internalDate": "1700000000000",
+            "payload": { "headers": [
+                { "name": "From", "value": "Kim <kim@x.com>" },
+                { "name": "Subject", "value": "greeting" }
+            ] }
+        })))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "emailAddress": "me@x.com", "historyId": "999"
+        })))
+        .mount(&harness.mock)
+        .await;
+
+    let summary = harness.service.sync_account(&account.id).await.unwrap();
+    assert_eq!(summary.fetched, 1);
+
+    let (gmail_id, subject, in_inbox, is_unread, from_name, from_email): (
+        String,
+        String,
+        i64,
+        i64,
+        String,
+        String,
+    ) = sqlx::query_as(
+        "SELECT gmail_id, subject, in_inbox, is_unread, from_name, from_email \
+         FROM gmail_messages WHERE account_id = ?",
+    )
+    .bind(&account.id)
+    .fetch_one(harness.core.pool())
+    .await
+    .unwrap();
+    assert_eq!(gmail_id, "m1");
+    assert_eq!(subject, "greeting");
+    assert_eq!(in_inbox, 1);
+    assert_eq!(is_unread, 1);
+    assert_eq!(from_name, "Kim");
+    assert_eq!(from_email, "kim@x.com");
+
+    let refreshed = todo_gmail::store::fetch_account(harness.core.pool(), &account.id)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.history_id.as_deref(), Some("999"));
+}
+
 #[tokio::test]
 async fn migration_creates_gmail_tables() {
     let (_db, core) = connect().await;

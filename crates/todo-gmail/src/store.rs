@@ -107,6 +107,52 @@ pub(crate) async fn mark_needs_auth(pool: &SqlitePool, email: &str) -> Result<()
     Ok(())
 }
 
+pub(crate) struct MessageMeta {
+    pub gmail_id: String,
+    pub thread_id: String,
+    pub from_name: String,
+    pub from_email: String,
+    pub subject: String,
+    pub snippet: String,
+    pub internal_date: i64,
+    pub in_inbox: bool,
+    pub is_unread: bool,
+}
+
+/// 메타데이터만 upsert 한다. 본문 컬럼(body_*)은 건드리지 않는다.
+pub(crate) async fn upsert_message_meta(
+    pool: &SqlitePool,
+    account_id: &str,
+    meta: &MessageMeta,
+) -> Result<(), Error> {
+    sqlx::query(
+        "INSERT INTO gmail_messages \
+         (account_id, gmail_id, thread_id, from_name, from_email, subject, snippet, \
+          internal_date, in_inbox, is_unread, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(account_id, gmail_id) DO UPDATE SET \
+           thread_id = excluded.thread_id, from_name = excluded.from_name, \
+           from_email = excluded.from_email, subject = excluded.subject, \
+           snippet = excluded.snippet, internal_date = excluded.internal_date, \
+           in_inbox = excluded.in_inbox, is_unread = excluded.is_unread, \
+           updated_at = excluded.updated_at",
+    )
+    .bind(account_id)
+    .bind(&meta.gmail_id)
+    .bind(&meta.thread_id)
+    .bind(&meta.from_name)
+    .bind(&meta.from_email)
+    .bind(&meta.subject)
+    .bind(&meta.snippet)
+    .bind(meta.internal_date)
+    .bind(meta.in_inbox)
+    .bind(meta.is_unread)
+    .bind(now_string())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, Error> {
     Ok(
         sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
