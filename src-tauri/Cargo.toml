@@ -1,0 +1,24 @@
+[package]
+name = "todo"
+version = "0.1.0"
+description = "Desktop shell for todo"
+authors = ["kanghyojun"]
+edition = "2024"
+
+[lib]
+name = "todo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+todo-core = { path = "../crates/todo-core" }
+todo-linear = { path = "../crates/todo-linear" }
+todo-server = { path = "../crates/todo-server" }
+tokio = { version = "1", features = ["sync"] }
+
+[workspace]

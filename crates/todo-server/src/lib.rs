@@ -4,7 +4,7 @@ mod mcp;
 mod rest;
 mod security;
 
-use std::{io, path::PathBuf, sync::Arc};
+use std::{io, path::PathBuf};
 
 use axum::{
     Router,
@@ -17,7 +17,7 @@ use rmcp::transport::{
 };
 use thiserror::Error;
 use todo_core::{Error as CoreError, TodoCore};
-use todo_linear::{LinearService, SystemKeyStore};
+use todo_linear::LinearService;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 pub use security::{default_token_path, load_or_create_token};
@@ -56,11 +56,6 @@ pub enum StartupError {
     Serve(#[source] io::Error),
     #[error("HOME is not set, so default todo paths cannot be resolved")]
     HomeNotSet,
-}
-
-pub fn build_router(core: TodoCore, config: ServerConfig) -> Result<Router, StartupError> {
-    let linear = LinearService::new(core.clone(), Arc::new(SystemKeyStore));
-    build_router_with_linear(core, linear, config)
 }
 
 pub fn build_router_with_linear(
@@ -122,7 +117,6 @@ pub fn build_router_with_linear(
         );
     }
 
-    linear.spawn_worker();
     Ok(router.layer(middleware::from_fn_with_state(
         security,
         security::validate_host_and_origin,

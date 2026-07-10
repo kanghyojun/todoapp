@@ -21,6 +21,21 @@ export interface TodoClient {
   subscribe(onChange: () => void): () => void;
 }
 
+export interface ServerStatus {
+  running: boolean;
+  error: string | null;
+}
+
+export type InvokeFn = (
+  command: string,
+  args?: Record<string, unknown>,
+) => Promise<unknown>;
+
+export type ListenFn = (
+  event: string,
+  handler: (event: unknown) => void,
+) => Promise<() => void>;
+
 interface ErrorEnvelope {
   error: {
     code: string;
@@ -134,6 +149,39 @@ function decodePullResult(value: unknown): PullResult {
   };
 }
 
+function decodeServerStatus(value: unknown): ServerStatus {
+  if (
+    !isRecord(value) ||
+    typeof value.running !== "boolean" ||
+    !isNullableString(value.error)
+  ) {
+    throw new ApiError(
+      "shell returned an invalid server status",
+      "invalid_response",
+      0,
+    );
+  }
+  return { running: value.running, error: value.error };
+}
+
+function commandError(value: unknown): Error {
+  if (
+    isRecord(value) &&
+    typeof value.code === "string" &&
+    typeof value.message === "string"
+  ) {
+    return value.code === "not_found"
+      ? new NotFoundError(value.message, 0)
+      : new ApiError(value.message, value.code, 0);
+  }
+  if (value instanceof Error) return value;
+  return new ApiError(
+    typeof value === "string" ? value : "IPC command failed",
+    "ipc_error",
+    0,
+  );
+}
+
 export class HttpClient implements TodoClient {
   constructor(
     private readonly token: string,
@@ -238,5 +286,81 @@ export class HttpClient implements TodoClient {
       return null;
     }
     return response.json() as Promise<unknown>;
+  }
+}
+
+export class TauriClient implements TodoClient {
+  constructor(
+    private readonly invoke: InvokeFn,
+    private readonly listen: ListenFn,
+  ) {}
+
+  async list(filter: Filter): Promise<Todo[]> {
+    return decodeTodos(await this.request("list", { filter }));
+  }
+
+  async get(id: string): Promise<Todo> {
+    return decodeTodo(await this.request("get", { id }));
+  }
+
+  async create(input: NewTodo): Promise<Todo> {
+    return decodeTodo(await this.request("create", { input }));
+  }
+
+  async update(id: string, patch: TodoPatch): Promise<Todo> {
+    return decodeTodo(await this.request("update", { id, patch }));
+  }
+
+  async setStatus(id: string, status: Status): Promise<Todo> {
+    return decodeTodo(await this.request("set_status", { id, status }));
+  }
+
+  async remove(id: string): Promise<void> {
+    await this.request("delete", { id });
+  }
+
+  async restore(id: string): Promise<Todo> {
+    return decodeTodo(await this.request("restore", { id }));
+  }
+
+  async linkLinear(id: string, issueRef: string): Promise<void> {
+    await this.request("link_linear", { id, issueRef });
+  }
+
+  async pullLinear(): Promise<PullResult> {
+    return decodePullResult(await this.request("pull_linear"));
+  }
+
+  async serverStatus(): Promise<ServerStatus> {
+    return decodeServerStatus(await this.request("server_status"));
+  }
+
+  subscribe(onChange: () => void): () => void {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void this.listen("todo:changed", onChange)
+      .then((stop) => {
+        if (disposed) {
+          stop();
+        } else {
+          unlisten = stop;
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }
+
+  private async request(
+    command: string,
+    args?: Record<string, unknown>,
+  ): Promise<unknown> {
+    try {
+      return await this.invoke(command, args);
+    } catch (error) {
+      throw commandError(error);
+    }
   }
 }

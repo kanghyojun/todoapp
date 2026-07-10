@@ -20,6 +20,7 @@ import { UndoStack, type InverseAction } from "./undo";
 
 interface AppProps {
   client: TodoClient;
+  externalServerError?: string;
 }
 
 type Overlay = "palette" | "help" | null;
@@ -632,6 +633,10 @@ export const App: Component<AppProps> = (props) => {
             />
             <kbd>Enter</kbd>
           </div>
+        </Show>
+
+        <Show when={props.externalServerError}>
+          {(message) => <div class="error-banner" role="alert">{message()}</div>}
         </Show>
 
         <Show when={error()}>
