@@ -325,14 +325,34 @@ JSON 파일이나 마크다운은 검색과 정렬에서 무너집니다.
 
 파싱에 실패하면 저장하지 않고 오류를 돌려줍니다. 조용히 오늘로 넣는 식의 추측을 하지 않습니다.
 
+### 목록과 검색은 하나다
+
+읽기 경로는 `list_todos(filter)` 하나뿐입니다. 검색만 하는 별도 함수를 두지 않습니다.
+
+`TodoFilter`가 받는 것은 `status`, `priority`, `due_before`, `query`, `limit`, `offset`입니다. 전부 선택입니다.
+
+검색과 필터를 따로 두면 "진행 중인 것 중에 '배포' 찾기"를 할 수 없습니다. 커맨드 팔레트와 `/` 검색이 곧바로 여기 부딪힙니다. 그래서 `query`는 다른 필터와 자유롭게 섞입니다.
+
+`query`가 있으면 FTS5 조인이 붙고 결과는 관련도(bm25) 순입니다. `query`가 없으면 아래 기본 정렬을 씁니다.
+
+`limit`과 `offset`은 SQL로 내려갑니다. 다 읽어와서 잘라내지 않습니다. `limit`의 상한은 1000이고, 넘겨 요청하면 1000으로 깎입니다. `limit` 없이 부르면 전부 돌려줍니다.
+
 ### 정렬
 
-기본 정렬입니다.
+`query`가 없을 때의 기본 정렬입니다.
 
 1. `in_progress`가 맨 위. 그다음 `todo`. `done`은 맨 아래.
 2. 마감일 임박순. 마감일이 없는 것은 있는 것보다 뒤.
 3. `priority_rank` 오름차순 (Urgent가 먼저).
 4. `created_at` 오름차순.
+
+### 한 번의 수정은 한 번의 트랜잭션
+
+`update_todo(id, patch)`의 `TodoPatch`는 `status`도 받습니다. 제목과 상태를 함께 바꾸는 일이 REST와 MCP에서 자연스럽게 일어나는데, 이를 두 번의 쓰기로 쪼개면 중간 상태가 새어나가고 도메인 이벤트가 두 번 발행됩니다.
+
+`status`가 `done`으로 바뀌면 `completed_at`을 찍고 아웃박스에 넣는 일까지 **같은 트랜잭션 안에서** 끝냅니다.
+
+`set_status(id, status)`는 남겨둡니다. 단축키 `d`와 `i`가 이것만 부르므로 편의 함수로 가치가 있습니다. 안에서 `update_todo`를 부릅니다.
 
 ## 6. 사용자 인터페이스
 
@@ -490,7 +510,11 @@ REST와 MCP가 같은 포트(2470)에서 서빙됩니다. axum 라우터 하나�
 | POST | `/api/v1/todos/:id/link/linear` | `{"issue_ref": "PI-1234"}` |
 | POST | `/api/v1/linear/pull` | 가져오기 실행. 결과 요약 반환 |
 
-`q`가 있으면 FTS5로 검색합니다. `due_date`는 자연어를 받습니다.
+`q`, `status`, `priority`, `due_before`, `limit`, `offset`은 **자유롭게 섞입니다.** `?q=배포&status=in_progress`가 동작해야 합니다. 조합을 거절하지 않습니다.
+
+`PATCH`도 마찬가지입니다. `{"title": "...", "status": "done"}`을 한 번에 받습니다. 코어가 한 트랜잭션에서 처리합니다.
+
+`due_date`는 자연어를 받습니다.
 
 `priority`는 요청과 응답 모두 문자열입니다. `urgent`, `high`, `medium`, `low`, `none`. 숫자 규약(0=None)은 데이터베이스 안에만 있고 바깥으로 새지 않습니다. MCP도 같습니다.
 
