@@ -91,6 +91,33 @@ enum DomainEvent {
 
 앱 UI는 HTTP가 아니라 Tauri IPC로 코어를 부릅니다. 서버가 안 떠도 앱은 정상 동작합니다.
 
+### 프론트엔드의 클라이언트 어댑터
+
+프론트는 Tauri IPC를 직접 부르지 않습니다. 얇은 인터페이스 하나를 거칩니다.
+
+```ts
+interface TodoClient {
+  list(filter: Filter): Promise<Todo[]>
+  get(id: string): Promise<Todo>
+  create(input: NewTodo): Promise<Todo>
+  update(id: string, patch: TodoPatch): Promise<Todo>
+  setStatus(id: string, status: Status): Promise<void>
+  remove(id: string): Promise<void>
+  restore(id: string): Promise<void>
+  linkLinear(id: string, issueRef: string): Promise<void>
+  pullLinear(): Promise<PullResult>
+  subscribe(onChange: () => void): () => void
+}
+```
+
+구현이 둘입니다. `TauriClient`는 IPC로, `HttpClient`는 REST로 붙습니다. 배포된 앱은 `TauriClient`를 씁니다. HTTP 왕복이 없다는 원래의 이점이 그대로 유지됩니다.
+
+`HttpClient`는 개발용입니다. 개발 기기가 GUI 없는 리눅스 서버이므로, `pnpm dev`로 Vite를 띄우고 브라우저에서 UI와 단축키를 다듬습니다. 이때 데이터는 REST로 옵니다. 가상 디스플레이나 VNC가 필요 없습니다.
+
+부수 효과가 둘입니다. REST를 매일 쓰게 되므로 품질이 저절로 검증됩니다. 그리고 Tauri 셸이 얇아집니다. 창을 만들고 IPC를 배선하는 것 외에 할 일이 없습니다.
+
+`subscribe`는 변경 알림입니다. `TauriClient`는 `todo:changed` 이벤트를, `HttpClient`는 폴링을 씁니다. 개발용이므로 폴링으로 충분합니다.
+
 ### 포트와 실패
 
 포트는 2470으로 고정합니다. MCP 클라이언트 설정 파일에 박히는 값이라 매번 바뀌면 안 됩니다. 포트가 이미 점유돼 있으면 조용히 다른 포트로 옮기지 않습니다. 앱은 그대로 뜨고, 상단에 "외부 인터페이스를 열지 못했습니다. 2470 포트가 사용 중입니다"라는 배너를 띄웁니다. UI는 IPC를 쓰므로 아무 지장이 없습니다.
@@ -530,12 +557,28 @@ claude mcp add --transport http todo http://127.0.0.1:2470/mcp \
 - 입력 필드에 포커스가 있을 때 `d`가 죽는지
 - 되돌리기 스택이 역동작을 올바로 쌓는지
 
-## 12. 마일스톤
+## 12. 개발 환경
 
-**M1 — 코어와 앱.** `todo-core`, 스키마와 마이그레이션, Tauri 셸, Solid 리스트 UI, 단축키, 커맨드 팔레트, FTS5 검색, 되돌리기. 여기까지 끝나면 매일 쓸 수 있어야 합니다.
+실제로 이 앱을 쓰는 기기는 macOS입니다. 개발은 GUI 없는 리눅스 서버에서 SSH로 합니다.
 
-**M2 — 바깥 인터페이스.** `todo-server`, 토큰 인증, REST, rmcp MCP, 도메인 이벤트 브로드캐스트로 실시간 갱신.
+이 비대칭이 마일스톤 순서를 정합니다. 리눅스에서 `cargo test`는 완전히 됩니다. 브라우저에서 Vite dev server를 보는 것도 포트 포워딩으로 됩니다. 안 되는 것은 딱 하나, Tauri 창을 띄워 눈으로 보는 것입니다.
 
-**M3 — Linear.** `todo-linear`, 키체인, GraphQL 클라이언트, 링크, 아웃박스 워커, 가져오기, 밀어넣기.
+그래서 Tauri 셸을 맨 뒤로 미룹니다. 그 앞의 모든 단계는 리눅스에서 검증됩니다. Tauri 셸은 얇으므로 Mac에서 마무리하는 비용이 작습니다.
 
-M1이 끝나기 전에 M3을 손대지 않습니다. 이 앱의 값어치는 단축키 체감에 거의 전부 걸려 있고, 그건 M1에서만 만들어집니다. M1을 며칠 써보고 단축키 배치가 손에 안 맞으면 그때 고치는 게, M3를 먼저 만들어놓고 고치는 것보다 훨씬 쌉니다.
+리눅스 개발 서버에 `libwebkit2gtk`를 깔지 않습니다. 필요가 없습니다.
+
+## 13. 마일스톤
+
+**M1 — todo-core.** 순수 Rust. 스키마와 마이그레이션, 도메인 유스케이스, 자연어 날짜 파서, FTS5 검색, 소프트 삭제와 복구, 아웃박스 적재, 도메인 이벤트. `cargo test`로 전부 검증됩니다.
+
+**M2 — todo-server.** axum, 토큰 인증, REST, rmcp MCP. 통합 테스트로 검증하고, `curl`과 MCP 클라이언트로 직접 확인합니다.
+
+**M3 — UI와 단축키.** Solid, `TodoClient` 인터페이스와 `HttpClient` 구현, 리스트, 커맨드 팔레트, 검색, 되돌리기. 브라우저에서 개발하고 확인합니다. 키 처리기는 순수 함수라 `vitest`로 검증합니다.
+
+**M4 — Tauri 셸.** Mac에서 진행합니다. 창, IPC command, `TauriClient` 구현, 도메인 이벤트를 웹뷰로 emit. 서버를 백그라운드 태스크로 띄우기. 여기까지 끝나면 매일 쓸 수 있습니다.
+
+**M5 — Linear.** `todo-linear`, 키체인, GraphQL 클라이언트, 링크, 아웃박스 워커, 가져오기, 밀어넣기.
+
+M3이 끝나기 전에 M5를 손대지 않습니다. 이 앱의 값어치는 단축키 체감에 거의 전부 걸려 있습니다. 그건 M3에서만 만들어집니다. M3을 며칠 써보고 단축키 배치가 손에 안 맞으면 그때 고치는 게, M5를 먼저 만들어놓고 고치는 것보다 훨씬 쌉니다.
+
+M2가 M3보다 앞에 오는 것이 원래 계획과 다른 점입니다. UI를 브라우저에서 개발하려면 REST가 먼저 있어야 하기 때문입니다.
