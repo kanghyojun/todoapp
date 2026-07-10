@@ -9,7 +9,7 @@ function state(overrides: Partial<KeyboardState> = {}): KeyboardState {
     selectedIds: [],
     inputMode: "none",
     detailOpen: false,
-    chordExpiresAt: null,
+    priorityChordActive: false,
     ...overrides,
   };
 }
@@ -42,30 +42,30 @@ describe("keyboard handler", () => {
     });
   });
 
-  it("resolves p then u and ignores p then z", () => {
+  it("resolves p then u and cancels on p then z", () => {
     const start = handleKey(state(), event("p"));
-    expect(start).toEqual({ type: "BeginPriorityChord", expiresAt: 1_500 });
-    const chordState = state({ chordExpiresAt: 1_500 });
-    expect(handleKey(chordState, event("u", { at: 1_499 }))).toEqual({
+    expect(start).toEqual({ type: "BeginPriorityChord" });
+    const chordState = state({ priorityChordActive: true });
+    expect(handleKey(chordState, event("u"))).toEqual({
       type: "SetPriority",
       ids: ["b"],
       priority: "urgent",
     });
-    expect(handleKey(chordState, event("z", { at: 1_200 }))).toBeNull();
+    // 조합 안의 엉뚱한 키는 조합만 취소하고 아무 일도 안 한다.
+    expect(handleKey(chordState, event("z"))).toBeNull();
   });
 
-  it("expires the priority chord after 500 ms", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000);
-    const start = handleKey(state(), event("p", { at: Date.now() }));
-    expect(start?.type).toBe("BeginPriorityChord");
-    vi.advanceTimersByTime(500);
-
-    // 만료된 chord 는 우선순위를 바꾸지 않는다. 대신 키를 삼키지도 않는다.
-    // p 를 눌렀다 마음이 바뀌어 u(되돌리기)를 누르면 한 번에 먹어야 한다.
-    expect(
-      handleKey(state({ chordExpiresAt: 1_500 }), event("u", { at: Date.now() })),
-    ).toEqual({ type: "Undo" });
+  it("the chord never expires: u long after p is still Urgent, not Undo", () => {
+    // p 를 누른 지 한참 뒤에 u 를 눌러도 Urgent 다. 만료가 없으니
+    // 조용히 되돌리기로 새지 않는다. 이게 이 변경의 핵심이다.
+    const chordState = state({ priorityChordActive: true });
+    expect(handleKey(chordState, event("u", { at: 9_999_999 }))).toEqual({
+      type: "SetPriority",
+      ids: ["b"],
+      priority: "urgent",
+    });
+    // 조합이 없을 때의 u 는 되돌리기다.
+    expect(handleKey(state(), event("u"))).toEqual({ type: "Undo" });
   });
 
   it("kills shortcuts in text fields while preserving Escape and Enter", () => {

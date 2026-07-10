@@ -137,7 +137,7 @@ export const App: Component<AppProps> = (props) => {
   const [inputValue, setInputValue] = createSignal("");
   const [inputTargets, setInputTargets] = createSignal<string[]>([]);
   const [overlay, setOverlay] = createSignal<Overlay>(null);
-  const [chordExpiresAt, setChordExpiresAt] = createSignal<number | null>(null);
+  const [priorityChordActive, setPriorityChordActive] = createSignal(false);
   const [paletteQuery, setPaletteQuery] = createSignal("");
   const [paletteTodos, setPaletteTodos] = createSignal<Todo[]>([]);
   const [theme, setTheme] = createSignal<ThemePreference>(readPreference(localStorage));
@@ -146,7 +146,6 @@ export const App: Component<AppProps> = (props) => {
   const rowElements = new Map<string, HTMLButtonElement>();
   let editorInput: HTMLInputElement | undefined;
   let paletteInput: HTMLInputElement | undefined;
-  let chordTimer: number | undefined;
   let paletteRequest = 0;
 
   const currentTodo = createMemo(() => todos()[cursorIndex()]);
@@ -497,12 +496,6 @@ export const App: Component<AppProps> = (props) => {
     );
   }
 
-  function scheduleChord(expiresAt: number): void {
-    if (chordTimer !== undefined) window.clearTimeout(chordTimer);
-    setChordExpiresAt(expiresAt);
-    chordTimer = window.setTimeout(() => setChordExpiresAt(null), 500);
-  }
-
   function changeFilter(status?: Status): void {
     setStatusFilter(status);
     setSelectedIds([]);
@@ -547,11 +540,11 @@ export const App: Component<AppProps> = (props) => {
         await toggleStatus(action.ids, "in_progress");
         break;
       case "BeginPriorityChord":
-        scheduleChord(action.expiresAt);
-        setToast("우선순위: u h m l n");
+        setPriorityChordActive(true);
+        setToast("우선순위: u h m l n (Esc 취소)");
         break;
       case "SetPriority":
-        setChordExpiresAt(null);
+        setPriorityChordActive(false);
         await setPriority(action.ids, action.priority);
         break;
       case "BeginDueDate":
@@ -624,7 +617,9 @@ export const App: Component<AppProps> = (props) => {
       ctrlKey: event.ctrlKey,
       shiftKey: event.shiftKey,
     };
-    const hadChord = chordExpiresAt() !== null;
+    // 조합이 열려 있었으면 이 키로 닫는다. 우선순위면 SetPriority 로
+    // 소비되고, 아니면 그냥 닫히기만 한다. 만료 타이머는 없다.
+    const hadChord = priorityChordActive();
     const action = handleKey(
       {
         scopeStack: scopeStack(),
@@ -633,11 +628,11 @@ export const App: Component<AppProps> = (props) => {
         selectedIds: selectedIds(),
         inputMode: inputMode(),
         detailOpen: detailId() !== null,
-        chordExpiresAt: chordExpiresAt(),
+        priorityChordActive: priorityChordActive(),
       },
       shortcutEvent,
     );
-    if (hadChord) setChordExpiresAt(null);
+    if (hadChord) setPriorityChordActive(false);
     if (action !== null) {
       event.preventDefault();
       void execute(action);
@@ -652,7 +647,6 @@ export const App: Component<AppProps> = (props) => {
     onCleanup(() => {
       unsubscribe();
       window.removeEventListener("keydown", onKeyDown);
-      if (chordTimer !== undefined) window.clearTimeout(chordTimer);
     });
   });
 

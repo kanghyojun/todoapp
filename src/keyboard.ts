@@ -18,7 +18,9 @@ export interface KeyboardState {
   selectedIds: readonly string[];
   inputMode: InputMode;
   detailOpen: boolean;
-  chordExpiresAt: number | null;
+  // p 를 눌러 우선순위 조합을 기다리는 중이다. 만료는 없다.
+  // 다음 키가 우선순위면 적용하고, 아니면 조합만 취소한다.
+  priorityChordActive: boolean;
 }
 
 export interface KeyEvent {
@@ -41,7 +43,7 @@ export type Action =
   | { type: "BeginEdit"; id: string }
   | { type: "ToggleDone"; ids: readonly string[] }
   | { type: "ToggleInProgress"; ids: readonly string[] }
-  | { type: "BeginPriorityChord"; expiresAt: number }
+  | { type: "BeginPriorityChord" }
   | { type: "SetPriority"; ids: readonly string[]; priority: Priority }
   | { type: "BeginDueDate"; ids: readonly string[] }
   | { type: "ToggleSelection"; id: string }
@@ -132,16 +134,16 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
     return null;
   }
 
-  // 만료된 chord 는 없는 것과 같다. 키를 삼키지 않고 평소대로 처리한다.
-  // 그래야 p 를 눌렀다 마음이 바뀌어 u(되돌리기)를 눌러도 한 번에 먹는다.
-  const chordActive = state.chordExpiresAt !== null && event.at < state.chordExpiresAt;
-  if (chordActive) {
+  // p 로 조합을 연 뒤에는 다음 키를 기다린다. 만료가 없으니
+  // 시간이 얼마가 지나든 그다음 키 하나가 조합을 결정한다.
+  // vim 이 d 를 누른 뒤 하는 것과 같다. 우선순위면 적용하고,
+  // 아니면(Esc 포함) 조합만 취소하고 아무 일도 하지 않는다.
+  if (state.priorityChordActive) {
     const priority = PRIORITY_KEYS[event.key.toLowerCase()];
     if (priority !== undefined) {
       const ids = targets(state);
       return ids.length === 0 ? null : { type: "SetPriority", ids, priority };
     }
-    // chord 창 안의 엉뚱한 키는 chord 만 취소하고 아무 일도 하지 않는다.
     return null;
   }
 
@@ -170,9 +172,7 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
     case "i":
       return ids.length === 0 ? null : { type: "ToggleInProgress", ids };
     case "p":
-      return ids.length === 0
-        ? null
-        : { type: "BeginPriorityChord", expiresAt: event.at + 500 };
+      return ids.length === 0 ? null : { type: "BeginPriorityChord" };
     case "t":
       return ids.length === 0 ? null : { type: "BeginDueDate", ids };
     case "x":

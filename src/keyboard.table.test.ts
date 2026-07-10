@@ -8,7 +8,7 @@ const base: KeyboardState = {
   selectedIds: [],
   inputMode: "none",
   detailOpen: false,
-  chordExpiresAt: null,
+  priorityChordActive: false,
 };
 
 const press = (key: string, s: Partial<KeyboardState> = {}, e: Partial<KeyEvent> = {}): Action | null =>
@@ -33,7 +33,7 @@ describe("스펙 6절 단축키 표의 모든 행", () => {
   });
 
   it("우선순위 코드 5개 전부", () => {
-    const chord = { chordExpiresAt: 1400 };
+    const chord = { priorityChordActive: true };
     for (const [key, priority] of [["u","urgent"],["h","high"],["m","medium"],["l","low"],["n","none"]] as const) {
       expect(press(key, chord)).toEqual({ type: "SetPriority", ids: ["b"], priority });
     }
@@ -72,14 +72,13 @@ describe("함정들", () => {
     expect(a?.type).toBe("BeginPriorityChord");
   });
 
-  it("chord 만료 후 u 는 Undo 이지 Urgent 가 아니다", () => {
-    // 만료된 chord (expiresAt 이 지났다)
-    const a = handleKey({ ...base, chordExpiresAt: 900 }, { key: "u", at: 1000, focus: "other" });
+  it("조합이 없으면 u 는 Undo 이지 Urgent 가 아니다", () => {
+    const a = handleKey({ ...base, priorityChordActive: false }, { key: "u", at: 1000, focus: "other" });
     expect(a).toEqual({ type: "Undo" });
   });
 
-  it("chord 유효 창 안에서는 u 가 Urgent", () => {
-    const a = handleKey({ ...base, chordExpiresAt: 1400 }, { key: "u", at: 1000, focus: "other" });
+  it("조합이 열려 있으면 u 가 Urgent (시간과 무관)", () => {
+    const a = handleKey({ ...base, priorityChordActive: true }, { key: "u", at: 9_999_999, focus: "other" });
     expect(a).toEqual({ type: "SetPriority", ids: ["b"], priority: "urgent" });
   });
 
