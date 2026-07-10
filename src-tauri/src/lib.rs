@@ -402,13 +402,11 @@ fn forward_domain_events(
     mut events: tokio::sync::broadcast::Receiver<DomainEvent>,
 ) {
     tauri::async_runtime::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let _ = app.emit(CHANGED_EVENT, ());
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
+        // Closed 면 끝난다. Lagged 는 이벤트를 놓쳤을 뿐이니 한 번 알리고 잇는다.
+        while let Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) =
+            events.recv().await
+        {
+            let _ = app.emit(CHANGED_EVENT, ());
         }
     });
 }
