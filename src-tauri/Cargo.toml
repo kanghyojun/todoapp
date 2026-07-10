@@ -14,9 +14,11 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 chrono = "0.4"
+open = "5"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 todo-core = { path = "../crates/todo-core" }
+todo-gmail = { path = "../crates/todo-gmail" }
 todo-linear = { path = "../crates/todo-linear" }
 todo-server = { path = "../crates/todo-server" }
 tokio = { version = "1", features = ["sync"] }
