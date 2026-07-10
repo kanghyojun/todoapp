@@ -1,5 +1,6 @@
 mod error;
 pub mod model;
+pub mod oauth;
 pub mod store;
 mod tokens;
 

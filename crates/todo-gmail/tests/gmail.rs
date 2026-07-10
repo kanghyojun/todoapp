@@ -80,3 +80,22 @@ async fn accounts_insert_list_delete_roundtrip() {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, b.id);
 }
+
+#[test]
+fn pkce_challenge_is_sha256_of_verifier() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use sha2::{Digest, Sha256};
+    let (verifier, challenge) = todo_gmail::oauth::generate_pkce();
+    let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    assert_eq!(challenge, expected);
+}
+
+#[test]
+fn auth_url_encodes_scope_and_redirect() {
+    let url = todo_gmail::oauth::build_auth_url("cid", "http://127.0.0.1:9999", "chal", "st");
+    assert!(url.contains("code_challenge=chal"));
+    assert!(url.contains("code_challenge_method=S256"));
+    assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A9999"));
+    assert!(url.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.modify"));
+    assert!(url.contains("access_type=offline"));
+}
