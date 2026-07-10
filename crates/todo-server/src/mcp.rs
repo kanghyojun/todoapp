@@ -5,14 +5,15 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use todo_core::{CreateTodoInput, Status, Todo, TodoCore, TodoFilter, TodoPatch};
+use todo_linear::LinearService;
 
 use crate::{
     dto::{
         McpCreateRequest, McpIdRequest, McpLinkRequest, McpListRequest, McpStatusRequest,
         McpUpdateRequest, parse_iso_date, parse_priority, parse_required_status, parse_status,
-        parse_todo_id, parse_wire_due_date, validate_issue_ref,
+        parse_todo_id, parse_wire_due_date,
     },
     error::ApiError,
 };
@@ -20,13 +21,15 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct TodoMcp {
     core: TodoCore,
+    linear: LinearService,
     tool_router: ToolRouter<Self>,
 }
 
 impl TodoMcp {
-    pub(crate) fn new(core: TodoCore) -> Self {
+    pub(crate) fn new(core: TodoCore, linear: LinearService) -> Self {
         Self {
             core,
+            linear,
             tool_router: Self::tool_router(),
         }
     }
@@ -176,7 +179,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Link an active todo to a Linear issue reference such as PI-1234. This is intentionally unavailable until M5 and currently returns a not_implemented tool error; it never fabricates a Linear issue ID."
+        description = "Link an active todo to a Linear issue identifier such as PI-1234 or a full Linear issue URL. Local title and description are never overwritten."
     )]
     async fn todo_link_linear(
         &self,
@@ -184,23 +187,18 @@ impl TodoMcp {
     ) -> CallToolResult {
         let result = async {
             let id = parse_todo_id(&request.id)?;
-            self.core.get_todo(id).await?;
-            validate_issue_ref(&request.issue_ref)?;
-            Err::<Value, _>(ApiError::not_implemented(
-                "linking Linear issues is not implemented until M5",
-            ))
+            self.linear.link(id, &request.issue_ref).await?;
+            Ok(json!({ "linked": true }))
         }
         .await;
         into_tool_result(result)
     }
 
     #[tool(
-        description = "Pull in-progress Linear issues into the local todo database. This integration is intentionally unavailable until M5 and currently returns a not_implemented tool error."
+        description = "Import Linear issues assigned to the configured viewer whose workflow state type is started. Existing links are never refreshed. Also closes local linked todos whose remote state is completed or canceled."
     )]
     async fn linear_pull_in_progress(&self) -> CallToolResult {
-        into_tool_result(Err::<Value, _>(ApiError::not_implemented(
-            "pulling Linear issues is not implemented until M5",
-        )))
+        into_tool_result(self.linear.pull().await.map_err(ApiError::from))
     }
 }
 

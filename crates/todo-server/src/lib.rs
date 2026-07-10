@@ -4,7 +4,7 @@ mod mcp;
 mod rest;
 mod security;
 
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, sync::Arc};
 
 use axum::{
     Router,
@@ -17,6 +17,7 @@ use rmcp::transport::{
 };
 use thiserror::Error;
 use todo_core::{Error as CoreError, TodoCore};
+use todo_linear::{LinearService, SystemKeyStore};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 pub use security::{default_token_path, load_or_create_token};
@@ -58,6 +59,15 @@ pub enum StartupError {
 }
 
 pub fn build_router(core: TodoCore, config: ServerConfig) -> Result<Router, StartupError> {
+    let linear = LinearService::new(core.clone(), Arc::new(SystemKeyStore));
+    build_router_with_linear(core, linear, config)
+}
+
+pub fn build_router_with_linear(
+    core: TodoCore,
+    linear: LinearService,
+    config: ServerConfig,
+) -> Result<Router, StartupError> {
     let allowed_hosts = vec![
         format!("127.0.0.1:{}", config.port),
         format!("localhost:{}", config.port),
@@ -79,21 +89,21 @@ pub fn build_router(core: TodoCore, config: ServerConfig) -> Result<Router, Star
         .with_allowed_hosts(allowed_hosts.clone())
         .with_allowed_origins(allowed_origins.clone());
     let mcp_core = core.clone();
+    let mcp_linear = linear.clone();
     let mcp_service: StreamableHttpService<mcp::TodoMcp, LocalSessionManager> =
         StreamableHttpService::new(
-            move || Ok(mcp::TodoMcp::new(mcp_core.clone())),
+            move || Ok(mcp::TodoMcp::new(mcp_core.clone(), mcp_linear.clone())),
             Default::default(),
             mcp_config,
         );
 
     let security = security::SecurityState::new(config.token, allowed_hosts, allowed_origins);
-    let mut router =
-        rest::router(core)
-            .nest_service("/mcp", mcp_service)
-            .layer(middleware::from_fn_with_state(
-                security.clone(),
-                security::authenticate,
-            ));
+    let mut router = rest::router(core, linear.clone())
+        .nest_service("/mcp", mcp_service)
+        .layer(middleware::from_fn_with_state(
+            security.clone(),
+            security::authenticate,
+        ));
 
     if !config.dev_origins.is_empty() {
         let origins = config
@@ -112,6 +122,7 @@ pub fn build_router(core: TodoCore, config: ServerConfig) -> Result<Router, Star
         );
     }
 
+    linear.spawn_worker();
     Ok(router.layer(middleware::from_fn_with_state(
         security,
         security::validate_host_and_origin,

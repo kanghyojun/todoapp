@@ -5,6 +5,7 @@ use axum::{
 };
 use serde::Serialize;
 use todo_core::Error as CoreError;
+use todo_linear::Error as LinearError;
 
 #[derive(Debug)]
 pub(crate) struct ApiError {
@@ -38,16 +39,50 @@ impl ApiError {
         }
     }
 
-    pub(crate) fn not_implemented(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_IMPLEMENTED,
-            code: "not_implemented",
-            message: message.into(),
-        }
-    }
-
     pub(crate) fn into_tool_message(self) -> String {
         format!("{}: {}", self.code, self.message)
+    }
+}
+
+impl From<LinearError> for ApiError {
+    fn from(error: LinearError) -> Self {
+        match error {
+            LinearError::NotConfigured => Self {
+                status: StatusCode::CONFLICT,
+                code: "linear_not_configured",
+                message: "Linear API key is not configured".to_owned(),
+            },
+            LinearError::Unauthorized => Self {
+                status: StatusCode::UNAUTHORIZED,
+                code: "linear_unauthorized",
+                message: "Linear rejected the API key".to_owned(),
+            },
+            LinearError::IssueNotFound => Self {
+                status: StatusCode::NOT_FOUND,
+                code: "not_found",
+                message: "Linear issue not found".to_owned(),
+            },
+            LinearError::InvalidInput(message) => Self::invalid_input(message),
+            LinearError::Core(error) => error.into(),
+            LinearError::Remote { .. } => Self {
+                status: StatusCode::BAD_GATEWAY,
+                code: "linear_api_error",
+                message: "the Linear API request failed".to_owned(),
+            },
+            LinearError::Database(detail) => {
+                eprintln!("todo-server Linear database error: {detail}");
+                Self {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    code: "internal_error",
+                    message: "the database operation failed".to_owned(),
+                }
+            }
+            LinearError::KeyStore(_) => Self {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "key_store_error",
+                message: "the OS keychain is unavailable".to_owned(),
+            },
+        }
     }
 }
 

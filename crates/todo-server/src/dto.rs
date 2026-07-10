@@ -83,6 +83,29 @@ pub(crate) struct LinearLinkRequest {
     pub(crate) issue_ref: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LinearKeyRequest {
+    pub(crate) api_key: String,
+}
+
+// Debug 를 파생하면 어딘가에서 {:?} 한 번에 API 키가 로그로 샌다. 손으로 가린다.
+impl std::fmt::Debug for LinearKeyRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LinearKeyRequest")
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LinearDoneStateRequest {
+    pub(crate) team_id: String,
+    pub(crate) state_id: String,
+}
+
 pub(crate) fn parse_json<T>(value: Result<axum::Json<T>, JsonRejection>) -> Result<T, ApiError> {
     value
         .map(|axum::Json(payload)| payload)
@@ -159,22 +182,6 @@ pub(crate) fn parse_required_status(value: &str) -> Result<Status, ApiError> {
     }
 }
 
-pub(crate) fn validate_issue_ref(value: &str) -> Result<(), ApiError> {
-    let Some((team, number)) = value.split_once('-') else {
-        return Err(ApiError::invalid_input("issue_ref must look like PI-1234"));
-    };
-    let valid_team = !team.is_empty()
-        && team
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit());
-    let valid_number =
-        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()) && number != "0";
-    if !valid_team || !valid_number || value.matches('-').count() != 1 {
-        return Err(ApiError::invalid_input("issue_ref must look like PI-1234"));
-    }
-    Ok(())
-}
-
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(crate) struct McpListRequest {
     #[schemars(description = "Optional status: todo, in_progress, or done")]
@@ -236,6 +243,6 @@ pub(crate) struct McpStatusRequest {
 pub(crate) struct McpLinkRequest {
     #[schemars(description = "Todo UUID")]
     pub(crate) id: String,
-    #[schemars(description = "Linear issue reference such as PI-1234")]
+    #[schemars(description = "Linear issue identifier such as PI-1234 or a full issue URL")]
     pub(crate) issue_ref: String,
 }

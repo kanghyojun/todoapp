@@ -261,6 +261,29 @@ impl TodoCore {
         .await
     }
 
+    pub async fn mark_done_from_remote(&self, id: TodoId) -> Result<Todo> {
+        let mut transaction = self.pool.begin().await?;
+        fetch_todo_row(id, &mut transaction).await?;
+        let now = now_string();
+        let updated = sqlx::query(
+            "UPDATE todos SET status = 'done', completed_at = ?, updated_at = ? \
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(Error::NotFound(id));
+        }
+        let todo = fetch_todo_row(id, &mut transaction).await?.try_into()?;
+        transaction.commit().await?;
+
+        self.emit(DomainEvent::TodoUpdated(id));
+        Ok(todo)
+    }
+
     pub async fn delete_todo(&self, id: TodoId) -> Result<()> {
         self.set_deleted_at(id, Some(now_string())).await?;
         self.emit(DomainEvent::TodoDeleted(id));

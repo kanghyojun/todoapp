@@ -177,6 +177,38 @@ async fn status_transitions_set_and_clear_completed_at() {
 }
 
 #[tokio::test]
+async fn remote_completion_marks_done_without_enqueuing_outbox() {
+    let (_database, core) = test_core().await;
+    let todo = core
+        .create_todo(CreateTodoInput::new("Linear closes this"))
+        .await
+        .expect("create todo");
+    core.link_linear(
+        todo.id,
+        LinearLinkInput {
+            issue_id: "issue-remote-done".to_owned(),
+            identifier: "PI-200".to_owned(),
+            url: "https://linear.app/acme/issue/PI-200/test".to_owned(),
+            team_id: "team-1".to_owned(),
+        },
+    )
+    .await
+    .expect("link todo");
+
+    let completed = core
+        .mark_done_from_remote(todo.id)
+        .await
+        .expect("apply remote completion");
+    assert_eq!(completed.status, Status::Done);
+    assert!(completed.completed_at.is_some());
+    let outbox_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sync_outbox")
+        .fetch_one(core.pool())
+        .await
+        .expect("count outbox rows");
+    assert_eq!(outbox_count, 0);
+}
+
+#[tokio::test]
 async fn create_todo_accepts_initial_status_and_completes_done_todos() {
     let (_database, core) = test_core().await;
     let in_progress = core
@@ -656,6 +688,38 @@ async fn update_moving_out_of_done_clears_completed_at() {
         .expect("move out of done");
     assert_eq!(reopened.status, Status::Todo);
     assert_eq!(reopened.completed_at, None);
+}
+
+#[tokio::test]
+async fn uncompleting_a_linked_todo_does_not_enqueue_another_outbox_row() {
+    let (_database, core) = test_core().await;
+    let todo = core
+        .create_todo(CreateTodoInput::new("reopen linked"))
+        .await
+        .expect("create todo");
+    core.link_linear(todo.id, linear_link("reopen-linked-issue"))
+        .await
+        .expect("link todo");
+    core.set_status(todo.id, Status::Done)
+        .await
+        .expect("mark done");
+    sqlx::query("UPDATE sync_outbox SET completed_at = created_at WHERE todo_id = ?")
+        .bind(todo.id.to_string())
+        .execute(core.pool())
+        .await
+        .expect("complete original outbox row");
+
+    core.set_status(todo.id, Status::InProgress)
+        .await
+        .expect("reopen todo");
+    let pending = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sync_outbox WHERE todo_id = ? AND completed_at IS NULL",
+    )
+    .bind(todo.id.to_string())
+    .fetch_one(core.pool())
+    .await
+    .expect("count pending rows");
+    assert_eq!(pending, 0);
 }
 
 #[tokio::test]

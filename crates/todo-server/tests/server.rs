@@ -1,11 +1,22 @@
-use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::Path,
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
 use chrono::{Days, Local};
 use reqwest::{Client, Response, StatusCode, header};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use todo_core::TodoCore;
-use todo_server::{ServerConfig, build_router, load_or_create_token};
+use todo_linear::{KeyStore, KeyStoreError, LinearService};
+use todo_server::{ServerConfig, build_router_with_linear, load_or_create_token};
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{body_string_contains, method},
+};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -14,10 +25,49 @@ struct TestServer {
     base_url: String,
     client: Client,
     task: tokio::task::JoinHandle<()>,
+    core: TodoCore,
+    linear: LinearService,
+}
+
+#[derive(Default)]
+struct MemoryKeyStore {
+    value: Mutex<Option<String>>,
+}
+
+impl KeyStore for MemoryKeyStore {
+    fn get(&self) -> Result<Option<String>, KeyStoreError> {
+        self.value
+            .lock()
+            .map_err(|_| KeyStoreError)
+            .map(|v| v.clone())
+    }
+
+    fn set(&self, value: &str) -> Result<(), KeyStoreError> {
+        *self.value.lock().map_err(|_| KeyStoreError)? = Some(value.to_owned());
+        Ok(())
+    }
+
+    fn delete(&self) -> Result<(), KeyStoreError> {
+        *self.value.lock().map_err(|_| KeyStoreError)? = None;
+        Ok(())
+    }
 }
 
 impl TestServer {
     async fn start(dev_origins: Vec<String>) -> Self {
+        Self::start_with_linear(
+            dev_origins,
+            Arc::new(MemoryKeyStore::default()),
+            "http://127.0.0.1:1/graphql".to_owned(),
+        )
+        .await
+    }
+
+    async fn start_with_linear(
+        dev_origins: Vec<String>,
+        keys: Arc<dyn KeyStore>,
+        endpoint: String,
+    ) -> Self {
         let temp_dir = tempfile::tempdir().expect("create temporary directory");
         let database = temp_dir.path().join("todo.db");
         let core = TodoCore::connect(&format!("sqlite://{}", database.display()))
@@ -27,8 +77,10 @@ impl TestServer {
             .await
             .expect("bind test server");
         let address = listener.local_addr().expect("read test address");
-        let router = build_router(
-            core,
+        let linear = LinearService::with_endpoint(core.clone(), keys, endpoint);
+        let router = build_router_with_linear(
+            core.clone(),
+            linear.clone(),
             ServerConfig {
                 port: address.port(),
                 token: TOKEN.to_owned(),
@@ -46,6 +98,8 @@ impl TestServer {
             base_url: format!("http://{address}"),
             client: Client::new(),
             task,
+            core,
+            linear,
         }
     }
 
@@ -158,7 +212,7 @@ async fn authentication_health_host_origin_and_cors_are_enforced() {
 }
 
 #[tokio::test]
-async fn rest_crud_dates_priority_soft_delete_search_and_linear_stub_work() {
+async fn rest_crud_dates_priority_soft_delete_search_and_unconfigured_linear_work() {
     let server = TestServer::start(Vec::new()).await;
     let expected_tomorrow = Local::now()
         .date_naive()
@@ -289,18 +343,24 @@ async fn rest_crud_dates_priority_soft_delete_search_and_linear_stub_work() {
                     .patch(server.url(&format!("/api/v1/todos/{id}"))),
             )
             .json(&json!({ "due_date": "쓰레기" })),
-        server
-            .authorized(
-                server
-                    .client
-                    .post(server.url(&format!("/api/v1/todos/{id}/link/linear"))),
-            )
-            .json(&json!({ "issue_ref": "PI-1234" })),
     ] {
         let response = request.send().await.expect("deleted todo request");
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(error_code(response).await, "not_found");
     }
+
+    let deleted_linear = server
+        .authorized(
+            server
+                .client
+                .post(server.url(&format!("/api/v1/todos/{id}/link/linear"))),
+        )
+        .json(&json!({ "issue_ref": "PI-1234" }))
+        .send()
+        .await
+        .expect("deleted todo Linear request");
+    assert_eq!(deleted_linear.status(), StatusCode::CONFLICT);
+    assert_eq!(error_code(deleted_linear).await, "linear_not_configured");
 
     let restored: Value = server
         .authorized(
@@ -327,7 +387,7 @@ async fn rest_crud_dates_priority_soft_delete_search_and_linear_stub_work() {
         assert_eq!(response.status(), StatusCode::OK, "query {query:?}");
     }
 
-    let link_stub = server
+    let unconfigured_link = server
         .authorized(
             server
                 .client
@@ -336,17 +396,262 @@ async fn rest_crud_dates_priority_soft_delete_search_and_linear_stub_work() {
         .json(&json!({ "issue_ref": "PI-1234" }))
         .send()
         .await
-        .expect("link Linear stub");
-    assert_eq!(link_stub.status(), StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(error_code(link_stub).await, "not_implemented");
+        .expect("link Linear without key");
+    assert_eq!(unconfigured_link.status(), StatusCode::CONFLICT);
+    assert_eq!(error_code(unconfigured_link).await, "linear_not_configured");
 
-    let pull_stub = server
+    let unconfigured_pull = server
         .authorized(server.client.post(server.url("/api/v1/linear/pull")))
         .send()
         .await
-        .expect("pull Linear stub");
-    assert_eq!(pull_stub.status(), StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(error_code(pull_stub).await, "not_implemented");
+        .expect("pull Linear without key");
+    assert_eq!(unconfigured_pull.status(), StatusCode::CONFLICT);
+    assert_eq!(error_code(unconfigured_pull).await, "linear_not_configured");
+
+    let status: Value = server
+        .authorized(server.client.get(server.url("/api/v1/linear/status")))
+        .send()
+        .await
+        .expect("Linear status without key")
+        .json()
+        .await
+        .expect("decode Linear status");
+    assert_eq!(status["configured"], false);
+    for request in [
+        server.authorized(
+            server
+                .client
+                .get(server.url("/api/v1/linear/pending-choices")),
+        ),
+        server
+            .authorized(server.client.post(server.url("/api/v1/linear/done-state")))
+            .json(&json!({ "team_id": "team", "state_id": "done" })),
+        server.authorized(server.client.post(server.url("/api/v1/linear/retry"))),
+    ] {
+        let response = request.send().await.expect("unconfigured Linear route");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(error_code(response).await, "linear_not_configured");
+    }
+}
+
+#[tokio::test]
+async fn linear_rest_and_mcp_routes_validate_link_pull_and_resolve_done_choice() {
+    let mock = MockServer::start().await;
+    let server = TestServer::start_with_linear(
+        Vec::new(),
+        Arc::new(MemoryKeyStore::default()),
+        format!("{}/graphql", mock.uri()),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(body_string_contains("Viewer"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "viewer": { "id": "viewer-1" } }
+        })))
+        .mount(&mock)
+        .await;
+    let set_key = server
+        .authorized(server.client.post(server.url("/api/v1/linear/key")))
+        .json(&json!({ "api_key": "server-test-key" }))
+        .send()
+        .await
+        .expect("set Linear key");
+    assert_eq!(set_key.status(), StatusCode::NO_CONTENT);
+
+    let local = server
+        .create_todo(json!({
+            "title": "local title",
+            "description": "local description"
+        }))
+        .await;
+    let local_id = local["id"].as_str().expect("local todo id");
+    Mock::given(method("POST"))
+        .and(body_string_contains("ResolveIssue"))
+        .and(body_string_contains("PI-500"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "issue": graphql_issue("issue-500", "PI-500", "remote title", "started", "team-choice") }
+        })))
+        .mount(&mock)
+        .await;
+    let linked = server
+        .authorized(
+            server
+                .client
+                .post(server.url(&format!("/api/v1/todos/{local_id}/link/linear"))),
+        )
+        .json(&json!({ "issue_ref": "https://linear.app/acme/issue/PI-500/slug" }))
+        .send()
+        .await
+        .expect("link through REST");
+    assert_eq!(linked.status(), StatusCode::OK);
+    let unchanged = server
+        .core
+        .get_todo(local_id.parse().expect("parse local id"))
+        .await
+        .expect("read linked todo");
+    assert_eq!(unchanged.title, "local title");
+    assert_eq!(unchanged.description, "local description");
+
+    Mock::given(method("POST"))
+        .and(body_string_contains("PullInProgress"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "issues": { "nodes": [graphql_issue("issue-600", "PI-600", "imported", "started", "team-other")] } }
+        })))
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_string_contains("ReverseStates"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "issues": { "nodes": [
+                graphql_issue("issue-500", "PI-500", "remote title", "started", "team-choice"),
+                graphql_issue("issue-600", "PI-600", "imported", "started", "team-other")
+            ] } }
+        })))
+        .mount(&mock)
+        .await;
+    let pull: Value = server
+        .authorized(server.client.post(server.url("/api/v1/linear/pull")))
+        .send()
+        .await
+        .expect("pull through REST")
+        .json()
+        .await
+        .expect("decode pull summary");
+    assert_eq!(pull["created"], 1);
+    assert_eq!(pull["skipped"], 0);
+
+    let mcp_todo = server
+        .create_todo(json!({ "title": "MCP link target" }))
+        .await;
+    let mcp_id = mcp_todo["id"].as_str().expect("MCP target id");
+    Mock::given(method("POST"))
+        .and(body_string_contains("ResolveIssue"))
+        .and(body_string_contains("PI-501"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "issue": graphql_issue("issue-501", "PI-501", "MCP remote", "started", "team-choice") }
+        })))
+        .mount(&mock)
+        .await;
+    let mcp_link: Value = server
+        .mcp(json!({
+            "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+            "params": { "name": "todo_link_linear", "arguments": { "id": mcp_id, "issue_ref": "PI-501" } }
+        }))
+        .await
+        .json()
+        .await
+        .expect("decode MCP link");
+    assert_eq!(mcp_link["result"]["isError"], false);
+    let mcp_pull: Value = server
+        .mcp(json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": { "name": "linear_pull_in_progress", "arguments": {} }
+        }))
+        .await
+        .json()
+        .await
+        .expect("decode MCP pull");
+    assert_eq!(mcp_pull["result"]["isError"], false);
+    assert_eq!(mcp_pull["result"]["structuredContent"]["skipped"], 1);
+
+    server
+        .authorized(
+            server
+                .client
+                .patch(server.url(&format!("/api/v1/todos/{local_id}"))),
+        )
+        .json(&json!({ "status": "done" }))
+        .send()
+        .await
+        .expect("mark linked todo done");
+    Mock::given(method("POST"))
+        .and(body_string_contains("CompletedStates"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "workflowStates": { "nodes": [
+                { "id": "done", "name": "Done" }, { "id": "merged", "name": "Merged" }
+            ] } }
+        })))
+        .mount(&mock)
+        .await;
+    server
+        .linear
+        .process_outbox_once()
+        .await
+        .expect("discover done-state choice");
+    let choices: Value = server
+        .authorized(
+            server
+                .client
+                .get(server.url("/api/v1/linear/pending-choices")),
+        )
+        .send()
+        .await
+        .expect("get pending choices")
+        .json()
+        .await
+        .expect("decode pending choices");
+    assert_eq!(choices[0]["team_id"], "team-choice");
+    sqlx::query(
+        "UPDATE sync_outbox SET attempts = 4, next_attempt_at = '9999-12-31T23:59:59.999Z' \
+         WHERE completed_at IS NULL",
+    )
+    .execute(server.core.pool())
+    .await
+    .expect("make outbox row failing");
+    let retry: Value = server
+        .authorized(server.client.post(server.url("/api/v1/linear/retry")))
+        .send()
+        .await
+        .expect("retry failing Linear rows")
+        .json()
+        .await
+        .expect("decode retry result");
+    assert_eq!(retry["retried"], 1);
+    let choose = server
+        .authorized(server.client.post(server.url("/api/v1/linear/done-state")))
+        .json(&json!({ "team_id": "team-choice", "state_id": "merged" }))
+        .send()
+        .await
+        .expect("choose done state");
+    assert_eq!(choose.status(), StatusCode::NO_CONTENT);
+    Mock::given(method("POST"))
+        .and(body_string_contains("CompleteIssue"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "issueUpdate": { "success": true } }
+        })))
+        .mount(&mock)
+        .await;
+    let pushed = server
+        .linear
+        .process_outbox_once()
+        .await
+        .expect("push after REST choice");
+    assert_eq!(pushed.pushed, 1);
+    let status: Value = server
+        .authorized(server.client.get(server.url("/api/v1/linear/status")))
+        .send()
+        .await
+        .expect("get configured status")
+        .json()
+        .await
+        .expect("decode configured status");
+    assert_eq!(status["configured"], true);
+    assert_eq!(status["pending"], 0);
+    let deleted_key = server
+        .authorized(server.client.delete(server.url("/api/v1/linear/key")))
+        .send()
+        .await
+        .expect("delete Linear key");
+    assert_eq!(deleted_key.status(), StatusCode::NO_CONTENT);
+    let status_after_delete: Value = server
+        .authorized(server.client.get(server.url("/api/v1/linear/status")))
+        .send()
+        .await
+        .expect("get status after key deletion")
+        .json()
+        .await
+        .expect("decode status after key deletion");
+    assert_eq!(status_after_delete["configured"], false);
 }
 
 #[tokio::test]
@@ -530,7 +835,7 @@ async fn mcp_lists_nine_tools_and_shares_the_core_with_rest() {
     assert_eq!(rest_todo["priority"], "high");
     assert_eq!(rest_todo["status"], "done");
 
-    let stub_response = server
+    let unconfigured_response = server
         .mcp(json!({
             "jsonrpc": "2.0",
             "id": 5,
@@ -538,13 +843,38 @@ async fn mcp_lists_nine_tools_and_shares_the_core_with_rest() {
             "params": { "name": "linear_pull_in_progress", "arguments": {} }
         }))
         .await;
-    let stub: Value = stub_response.json().await.expect("decode MCP stub error");
-    assert_eq!(stub["result"]["isError"], true);
+    let unconfigured: Value = unconfigured_response
+        .json()
+        .await
+        .expect("decode MCP Linear error");
+    assert_eq!(unconfigured["result"]["isError"], true);
     assert!(
-        stub["result"]["content"][0]["text"]
+        unconfigured["result"]["content"][0]["text"]
             .as_str()
             .expect("MCP error text")
-            .contains("not_implemented")
+            .contains("linear_not_configured")
+    );
+
+    let unconfigured_link: Value = server
+        .mcp(json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "todo_link_linear",
+                "arguments": { "id": id, "issue_ref": "PI-1" }
+            }
+        }))
+        .await
+        .json()
+        .await
+        .expect("decode MCP Linear link error");
+    assert_eq!(unconfigured_link["result"]["isError"], true);
+    assert!(
+        unconfigured_link["result"]["content"][0]["text"]
+            .as_str()
+            .expect("MCP link error text")
+            .contains("linear_not_configured")
     );
 }
 
@@ -594,4 +924,23 @@ fn mode(path: &Path) -> u32 {
         .permissions()
         .mode()
         & 0o777
+}
+
+fn graphql_issue(
+    id: &str,
+    identifier: &str,
+    title: &str,
+    state_type: &str,
+    team_id: &str,
+) -> Value {
+    json!({
+        "id": id,
+        "identifier": identifier,
+        "title": title,
+        "description": format!("description {id}"),
+        "url": format!("https://linear.app/acme/issue/{identifier}/slug"),
+        "priority": 2,
+        "state": { "id": format!("state-{state_type}"), "name": state_type, "type": state_type },
+        "team": { "id": team_id }
+    })
 }
