@@ -1,6 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
-use chrono::{NaiveDate, SecondsFormat, Utc};
+use chrono::{Local, NaiveDate, SecondsFormat, Utc};
 use sqlx::{
     FromRow, QueryBuilder, Sqlite, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     CreateTodoInput, DomainEvent, Error, LinearLinkInput, Priority, Result, Status, Todo,
-    TodoFilter, TodoId, TodoPatch,
+    TodoFilter, TodoId, TodoPatch, parse_due_date,
 };
 
 #[derive(Clone)]
@@ -97,28 +97,82 @@ impl TodoCore {
     }
 
     pub async fn list_todos(&self, filter: TodoFilter) -> Result<Vec<Todo>> {
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT id, title, description, status, priority, due_date, completed_at, \
-             created_at, updated_at, deleted_at FROM todos WHERE deleted_at IS NULL",
-        );
-        if let Some(status) = filter.status {
-            query.push(" AND status = ").push_bind(status.as_db_str());
-        }
-        if let Some(priority) = filter.priority {
+        let TodoFilter {
+            status,
+            priority,
+            due_before,
+            query: search,
+            limit,
+            offset,
+        } = filter;
+        let match_expression = if let Some(search) = search.as_deref() {
+            let Some(expression) = fts_match_expression(search) else {
+                return Ok(Vec::new());
+            };
+            Some(expression)
+        } else {
+            None
+        };
+        let mut query = if let Some(expression) = match_expression {
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
+                 t.completed_at, t.created_at, t.updated_at, t.deleted_at \
+                 FROM todos_fts JOIN todos AS t ON t.rowid = todos_fts.rowid \
+                 WHERE todos_fts MATCH ",
+            );
             query
-                .push(" AND priority = ")
+                .push_bind(expression)
+                .push(" AND t.deleted_at IS NULL");
+            query
+        } else {
+            QueryBuilder::<Sqlite>::new(
+                "SELECT id, title, description, status, priority, due_date, completed_at, \
+                 created_at, updated_at, deleted_at FROM todos WHERE deleted_at IS NULL",
+            )
+        };
+        let column_prefix = if search.is_some() { "t." } else { "" };
+        if let Some(status) = status {
+            query
+                .push(" AND ")
+                .push(column_prefix)
+                .push("status = ")
+                .push_bind(status.as_db_str());
+        }
+        if let Some(priority) = priority {
+            query
+                .push(" AND ")
+                .push(column_prefix)
+                .push("priority = ")
                 .push_bind(priority.as_db_integer());
         }
-        if let Some(due_before) = filter.due_before {
+        if let Some(due_before) = due_before {
             query
-                .push(" AND due_date < ")
+                .push(" AND ")
+                .push(column_prefix)
+                .push("due_date < ")
                 .push_bind(due_before.format("%Y-%m-%d").to_string());
         }
-        query.push(
-            " ORDER BY CASE status \
-               WHEN 'in_progress' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END, \
-               due_date IS NULL, due_date ASC, priority_rank ASC, created_at ASC",
-        );
+        if search.is_some() {
+            query.push(" ORDER BY bm25(todos_fts), t.created_at ASC, t.id ASC");
+        } else {
+            query.push(
+                " ORDER BY CASE status \
+                   WHEN 'in_progress' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END, \
+                   due_date IS NULL, due_date ASC, priority_rank ASC, created_at ASC, id ASC",
+            );
+        }
+        match (limit, offset) {
+            (Some(limit), offset) => {
+                query.push(" LIMIT ").push_bind(i64::from(limit.min(1_000)));
+                if let Some(offset) = offset {
+                    query.push(" OFFSET ").push_bind(i64::from(offset));
+                }
+            }
+            (None, Some(offset)) => {
+                query.push(" LIMIT -1 OFFSET ").push_bind(i64::from(offset));
+            }
+            (None, None) => {}
+        }
         let rows = query
             .build_query_as::<TodoRow>()
             .fetch_all(&self.pool)
@@ -129,47 +183,37 @@ impl TodoCore {
     pub async fn update_todo(&self, id: TodoId, patch: TodoPatch) -> Result<Todo> {
         let mut transaction = self.pool.begin().await?;
         let current = fetch_todo_row(id, &mut transaction).await?;
+        let now = now_string();
         let patched_title = patch.title.map(normalize_title).transpose()?;
         let title = patched_title.unwrap_or(current.title);
         let description = patch.description.unwrap_or(current.description);
+        let status = patch
+            .status
+            .map_or_else(|| Status::from_db(&current.status), Ok)?;
         let priority = patch
             .priority
             .map_or(current.priority, Priority::as_db_integer);
         let due_date = match patch.due_date {
-            Some(date) => date.map(format_date),
+            Some(Some(input)) => parse_due_date(&input, Local::now().date_naive())
+                .map_err(|error| Error::InvalidInput(error.to_string()))?
+                .map(format_date),
+            Some(None) => None,
             None => current.due_date,
         };
+        let completed_at = match patch.status {
+            Some(Status::Done) => Some(now.clone()),
+            Some(_) => None,
+            None => current.completed_at,
+        };
         let updated = sqlx::query(
-            "UPDATE todos SET title = ?, description = ?, priority = ?, due_date = ?, \
-             updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+            "UPDATE todos SET title = ?, description = ?, status = ?, priority = ?, due_date = ?, \
+             completed_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(title)
         .bind(description)
+        .bind(status.as_db_str())
         .bind(priority)
         .bind(due_date)
-        .bind(now_string())
-        .bind(id.to_string())
-        .execute(&mut *transaction)
-        .await?;
-        if updated.rows_affected() == 0 {
-            return Err(Error::NotFound(id));
-        }
-        transaction.commit().await?;
-
-        let todo = self.get_todo(id).await?;
-        self.emit(DomainEvent::TodoUpdated(id));
-        Ok(todo)
-    }
-
-    pub async fn set_status(&self, id: TodoId, status: Status) -> Result<Todo> {
-        let now = now_string();
-        let completed_at = (status == Status::Done).then_some(now.as_str());
-        let mut transaction = self.pool.begin().await?;
-        let updated = sqlx::query(
-            "UPDATE todos SET status = ?, completed_at = ?, updated_at = ? \
-             WHERE id = ? AND deleted_at IS NULL",
-        )
-        .bind(status.as_db_str())
         .bind(completed_at)
         .bind(&now)
         .bind(id.to_string())
@@ -178,8 +222,7 @@ impl TodoCore {
         if updated.rows_affected() == 0 {
             return Err(Error::NotFound(id));
         }
-
-        let outbox_inserted = if status == Status::Done {
+        let outbox_inserted = if patch.status == Some(Status::Done) {
             sqlx::query(
                 "INSERT OR IGNORE INTO sync_outbox \
                  (todo_id, kind, next_attempt_at, created_at) \
@@ -197,14 +240,25 @@ impl TodoCore {
         } else {
             false
         };
+        let todo = fetch_todo_row(id, &mut transaction).await?.try_into()?;
         transaction.commit().await?;
 
-        let todo = self.get_todo(id).await?;
         self.emit(DomainEvent::TodoUpdated(id));
         if outbox_inserted {
             self.emit(DomainEvent::SyncStateChanged);
         }
         Ok(todo)
+    }
+
+    pub async fn set_status(&self, id: TodoId, status: Status) -> Result<Todo> {
+        self.update_todo(
+            id,
+            TodoPatch {
+                status: Some(status),
+                ..TodoPatch::default()
+            },
+        )
+        .await
     }
 
     pub async fn delete_todo(&self, id: TodoId) -> Result<()> {
@@ -255,24 +309,6 @@ impl TodoCore {
         transaction.commit().await?;
         self.emit(DomainEvent::TodoUpdated(id));
         Ok(())
-    }
-
-    pub async fn search_todos(&self, query: &str) -> Result<Vec<Todo>> {
-        let Some(match_expression) = fts_match_expression(query) else {
-            return Ok(Vec::new());
-        };
-        let rows = sqlx::query_as::<_, TodoRow>(
-            "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
-                    t.completed_at, t.created_at, t.updated_at, t.deleted_at \
-             FROM todos_fts \
-             JOIN todos AS t ON t.rowid = todos_fts.rowid \
-             WHERE todos_fts MATCH ? AND t.deleted_at IS NULL \
-             ORDER BY bm25(todos_fts), t.created_at ASC",
-        )
-        .bind(match_expression)
-        .fetch_all(&self.pool)
-        .await?;
-        rows.into_iter().map(TryInto::try_into).collect()
     }
 
     async fn set_deleted_at(&self, id: TodoId, deleted_at: Option<String>) -> Result<()> {

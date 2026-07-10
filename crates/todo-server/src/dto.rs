@@ -1,7 +1,7 @@
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use chrono::{Local, NaiveDate};
 use rmcp::schemars;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use todo_core::{CreateTodoInput, Priority, Status, TodoFilter, TodoPatch, parse_due_date};
 
 use crate::error::ApiError;
@@ -37,24 +37,19 @@ pub(crate) struct UpdateTodoRequest {
     pub(crate) description: Option<String>,
     pub(crate) status: Option<Status>,
     pub(crate) priority: Option<Priority>,
-    pub(crate) due_date: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) due_date: Option<Option<String>>,
 }
 
 impl UpdateTodoRequest {
-    pub(crate) fn has_todo_patch(&self) -> bool {
-        self.title.is_some()
-            || self.description.is_some()
-            || self.priority.is_some()
-            || self.due_date.is_some()
-    }
-
-    pub(crate) fn into_core_patch(self) -> Result<TodoPatch, ApiError> {
-        Ok(TodoPatch {
+    pub(crate) fn into_core_patch(self) -> TodoPatch {
+        TodoPatch {
             title: self.title,
             description: self.description,
+            status: self.status,
             priority: self.priority,
-            due_date: parse_wire_due_date(self.due_date.as_deref())?,
-        })
+            due_date: self.due_date,
+        }
     }
 }
 
@@ -65,22 +60,20 @@ pub(crate) struct ListQuery {
     pub(crate) priority: Option<Priority>,
     pub(crate) due_before: Option<String>,
     pub(crate) q: Option<String>,
-    pub(crate) limit: Option<usize>,
-    #[serde(default)]
-    pub(crate) offset: usize,
+    pub(crate) limit: Option<u32>,
+    pub(crate) offset: Option<u32>,
 }
 
 impl ListQuery {
-    pub(crate) fn core_filter(&self) -> Result<TodoFilter, ApiError> {
+    pub(crate) fn into_core_filter(self) -> Result<TodoFilter, ApiError> {
         Ok(TodoFilter {
             status: self.status,
             priority: self.priority,
             due_before: self.due_before.as_deref().map(parse_iso_date).transpose()?,
+            query: self.q,
+            limit: self.limit,
+            offset: self.offset,
         })
-    }
-
-    pub(crate) fn has_filters(&self) -> bool {
-        self.status.is_some() || self.priority.is_some() || self.due_before.is_some()
     }
 }
 
@@ -124,6 +117,14 @@ pub(crate) fn parse_wire_due_date(
                 .map_err(|error| ApiError::invalid_input(error.to_string()))
         })
         .transpose()
+}
+
+fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 pub(crate) fn parse_priority(value: Option<&str>) -> Result<Option<Priority>, ApiError> {
@@ -185,7 +186,7 @@ pub(crate) struct McpListRequest {
     #[schemars(description = "Optional full-text search query")]
     pub(crate) query: Option<String>,
     #[schemars(description = "Maximum number of todos to return")]
-    pub(crate) limit: Option<usize>,
+    pub(crate) limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -214,10 +215,13 @@ pub(crate) struct McpUpdateRequest {
     pub(crate) title: Option<String>,
     #[schemars(description = "New details; omitted leaves them unchanged")]
     pub(crate) description: Option<String>,
+    #[schemars(description = "New status: todo, in_progress, or done")]
+    pub(crate) status: Option<String>,
     #[schemars(description = "Priority string: none, urgent, high, medium, or low")]
     pub(crate) priority: Option<String>,
     #[schemars(description = "Natural-language due date; use an empty string to clear it")]
-    pub(crate) due_date: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) due_date: Option<Option<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

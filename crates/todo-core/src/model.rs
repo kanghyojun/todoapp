@@ -149,8 +149,9 @@ impl CreateTodoInput {
 pub struct TodoPatch {
     pub title: Option<String>,
     pub description: Option<String>,
+    pub status: Option<Status>,
     pub priority: Option<Priority>,
-    pub due_date: Option<Option<NaiveDate>>,
+    pub due_date: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -158,6 +159,9 @@ pub struct TodoFilter {
     pub status: Option<Status>,
     pub priority: Option<Priority>,
     pub due_before: Option<NaiveDate>,
+    pub query: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

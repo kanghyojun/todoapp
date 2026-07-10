@@ -41,18 +41,7 @@ async fn list_todos(
     query: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Vec<Todo>>, ApiError> {
     let query = parse_query(query)?;
-    let mut todos = if let Some(search) = query.q.as_deref() {
-        if query.has_filters() {
-            return Err(ApiError::invalid_input(
-                "q cannot currently be combined with status, priority, or due_before",
-            ));
-        }
-        core.search_todos(search).await?
-    } else {
-        core.list_todos(query.core_filter()?).await?
-    };
-    todos = paginate(todos, query.offset, query.limit);
-    Ok(Json(todos))
+    Ok(Json(core.list_todos(query.into_core_filter()?).await?))
 }
 
 async fn create_todo(
@@ -77,19 +66,7 @@ async fn update_todo(
 ) -> Result<Json<Todo>, ApiError> {
     let id = parse_todo_id(&id)?;
     let request = parse_json(payload)?;
-    let status = request.status;
-    let has_patch = request.has_todo_patch();
-    if status.is_some() && has_patch {
-        return Err(ApiError::invalid_input(
-            "status cannot currently be changed in the same request as other fields",
-        ));
-    }
-    let todo = match status {
-        Some(status) => core.set_status(id, status).await?,
-        None if has_patch => core.update_todo(id, request.into_core_patch()?).await?,
-        None => core.get_todo(id).await?,
-    };
-    Ok(Json(todo))
+    Ok(Json(core.update_todo(id, request.into_core_patch()).await?))
 }
 
 async fn delete_todo(
@@ -125,12 +102,4 @@ async fn linear_pull() -> Result<Json<Value>, ApiError> {
     Err(ApiError::not_implemented(
         "pulling Linear issues is not implemented until M5",
     ))
-}
-
-fn paginate<T>(items: Vec<T>, offset: usize, limit: Option<usize>) -> Vec<T> {
-    let remaining = items.into_iter().skip(offset);
-    match limit {
-        Some(limit) => remaining.take(limit).collect(),
-        None => remaining.collect(),
-    }
 }

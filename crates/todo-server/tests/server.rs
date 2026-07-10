@@ -213,8 +213,7 @@ async fn rest_crud_dates_priority_soft_delete_search_and_linear_stub_work() {
         )
         .json(&json!({
             "description": "updated",
-            "priority": "low",
-            "due_date": ""
+            "priority": "low"
         }))
         .send()
         .await
@@ -223,7 +222,7 @@ async fn rest_crud_dates_priority_soft_delete_search_and_linear_stub_work() {
     let updated: Value = updated_response.json().await.expect("decode updated todo");
     assert_eq!(updated["description"], "updated");
     assert_eq!(updated["priority"], "low");
-    assert!(updated["due_date"].is_null());
+    assert_eq!(updated["due_date"], expected_tomorrow);
 
     let status_updated: Value = server
         .authorized(
@@ -231,14 +230,16 @@ async fn rest_crud_dates_priority_soft_delete_search_and_linear_stub_work() {
                 .client
                 .patch(server.url(&format!("/api/v1/todos/{id}"))),
         )
-        .json(&json!({ "status": "in_progress" }))
+        .json(&json!({ "title": "x", "status": "done", "due_date": null }))
         .send()
         .await
         .expect("update todo status")
         .json()
         .await
         .expect("decode status update");
-    assert_eq!(status_updated["status"], "in_progress");
+    assert_eq!(status_updated["title"], "x");
+    assert_eq!(status_updated["status"], "done");
+    assert!(status_updated["due_date"].is_null());
 
     let integer_priority = server
         .authorized(server.client.post(server.url("/api/v1/todos")))
@@ -281,6 +282,13 @@ async fn rest_crud_dates_priority_soft_delete_search_and_linear_stub_work() {
                     .patch(server.url(&format!("/api/v1/todos/{id}"))),
             )
             .json(&json!({ "title": "still deleted" })),
+        server
+            .authorized(
+                server
+                    .client
+                    .patch(server.url(&format!("/api/v1/todos/{id}"))),
+            )
+            .json(&json!({ "due_date": "쓰레기" })),
         server
             .authorized(
                 server
@@ -339,6 +347,59 @@ async fn rest_crud_dates_priority_soft_delete_search_and_linear_stub_work() {
         .expect("pull Linear stub");
     assert_eq!(pull_stub.status(), StatusCode::NOT_IMPLEMENTED);
     assert_eq!(error_code(pull_stub).await, "not_implemented");
+}
+
+#[tokio::test]
+async fn rest_combines_search_filters_and_applies_sql_pagination() {
+    let server = TestServer::start(Vec::new()).await;
+    let deployment_in_progress = server
+        .create_todo(json!({
+            "title": "배포 진행 작업",
+            "status": "in_progress"
+        }))
+        .await;
+    server
+        .create_todo(json!({ "title": "배포 대기 작업" }))
+        .await;
+    server
+        .create_todo(json!({
+            "title": "문서 진행 작업",
+            "status": "in_progress"
+        }))
+        .await;
+
+    let filtered_response = server
+        .authorized(server.client.get(server.url("/api/v1/todos")))
+        .query(&[("q", "배포"), ("status", "in_progress")])
+        .send()
+        .await
+        .expect("combined search request");
+    assert_eq!(filtered_response.status(), StatusCode::OK);
+    let filtered: Value = filtered_response
+        .json()
+        .await
+        .expect("decode combined search");
+    assert_eq!(filtered.as_array().expect("filtered array").len(), 1);
+    assert_eq!(filtered[0]["id"], deployment_in_progress["id"]);
+
+    let all: Value = server
+        .authorized(server.client.get(server.url("/api/v1/todos")))
+        .send()
+        .await
+        .expect("full list request")
+        .json()
+        .await
+        .expect("decode full list");
+    let page_response = server
+        .authorized(server.client.get(server.url("/api/v1/todos")))
+        .query(&[("limit", "1"), ("offset", "1")])
+        .send()
+        .await
+        .expect("page request");
+    assert_eq!(page_response.status(), StatusCode::OK);
+    let page: Value = page_response.json().await.expect("decode page");
+    assert_eq!(page.as_array().expect("page array").len(), 1);
+    assert_eq!(page[0]["id"], all[1]["id"]);
 }
 
 #[tokio::test]
@@ -428,6 +489,31 @@ async fn mcp_lists_nine_tools_and_shares_the_core_with_rest() {
         .as_str()
         .expect("MCP-created todo id");
 
+    let update_response = server
+        .mcp(json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "todo_update",
+                "arguments": {
+                    "id": id,
+                    "title": "updated through MCP",
+                    "status": "done",
+                    "due_date": null
+                }
+            }
+        }))
+        .await;
+    let update: Value = update_response.json().await.expect("decode MCP update");
+    assert_eq!(update["result"]["isError"], false);
+    assert_eq!(
+        update["result"]["structuredContent"]["title"],
+        "updated through MCP"
+    );
+    assert_eq!(update["result"]["structuredContent"]["status"], "done");
+    assert!(update["result"]["structuredContent"]["due_date"].is_null());
+
     let rest_todo: Value = server
         .authorized(
             server
@@ -440,13 +526,14 @@ async fn mcp_lists_nine_tools_and_shares_the_core_with_rest() {
         .json()
         .await
         .expect("decode REST todo");
-    assert_eq!(rest_todo["title"], "created through MCP");
+    assert_eq!(rest_todo["title"], "updated through MCP");
     assert_eq!(rest_todo["priority"], "high");
+    assert_eq!(rest_todo["status"], "done");
 
     let stub_response = server
         .mcp(json!({
             "jsonrpc": "2.0",
-            "id": 4,
+            "id": 5,
             "method": "tools/call",
             "params": { "name": "linear_pull_in_progress", "arguments": {} }
         }))

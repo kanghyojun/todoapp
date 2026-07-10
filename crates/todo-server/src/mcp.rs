@@ -39,26 +39,17 @@ impl TodoMcp {
             .as_deref()
             .map(parse_iso_date)
             .transpose()?;
-        let mut todos = if let Some(query) = request.query.as_deref() {
-            if status.is_some() || priority.is_some() || due_before.is_some() {
-                return Err(ApiError::invalid_input(
-                    "query cannot currently be combined with status, priority, or due_before",
-                ));
-            }
-            self.core.search_todos(query).await?
-        } else {
-            self.core
-                .list_todos(TodoFilter {
-                    status,
-                    priority,
-                    due_before,
-                })
-                .await?
-        };
-        if let Some(limit) = request.limit {
-            todos.truncate(limit);
-        }
-        Ok(todos)
+        Ok(self
+            .core
+            .list_todos(TodoFilter {
+                status,
+                priority,
+                due_before,
+                query: request.query,
+                limit: request.limit,
+                offset: None,
+            })
+            .await?)
     }
 
     async fn create(&self, request: McpCreateRequest) -> Result<Todo, ApiError> {
@@ -80,13 +71,14 @@ impl TodoMcp {
         let id = parse_todo_id(&request.id)?;
         let has_patch = request.title.is_some()
             || request.description.is_some()
+            || request.status.is_some()
             || request.priority.is_some()
             || request.due_date.is_some();
         if !has_patch {
             return Ok(self.core.get_todo(id).await?);
         }
+        let status = parse_status(request.status.as_deref())?;
         let priority = parse_priority(request.priority.as_deref())?;
-        let due_date = parse_wire_due_date(request.due_date.as_deref())?;
         Ok(self
             .core
             .update_todo(
@@ -94,8 +86,9 @@ impl TodoMcp {
                 TodoPatch {
                     title: request.title,
                     description: request.description,
+                    status,
                     priority,
-                    due_date,
+                    due_date: request.due_date,
                 },
             )
             .await?)
@@ -134,7 +127,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Update only the supplied fields of an active todo. priority must be none|urgent|high|medium|low. due_date accepts tomorrow, fri, 3d, or YYYY-MM-DD; use an empty string to clear it. Use todo_set_status for status changes."
+        description = "Atomically update any supplied fields of an active todo. status may be todo|in_progress|done and can be combined with other fields. priority must be none|urgent|high|medium|low. due_date accepts tomorrow, fri, 3d, or YYYY-MM-DD; use an empty string or null to clear it."
     )]
     async fn todo_update(
         &self,
