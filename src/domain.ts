@@ -1,4 +1,4 @@
-export type Status = "todo" | "in_progress" | "done";
+export type Status = "todo" | "in_progress" | "done" | "deferred";
 
 export type Priority = "none" | "urgent" | "high" | "medium" | "low";
 
@@ -24,6 +24,7 @@ export interface Todo {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  deferred_until: string | null;
   linear: LinearRef | null;
 }
 

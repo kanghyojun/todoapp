@@ -1,4 +1,4 @@
-use chrono::DateTime;
+use chrono::{DateTime, Local};
 use sqlx::Row;
 use tempfile::NamedTempFile;
 use todo_core::{
@@ -953,6 +953,102 @@ async fn reads_carry_the_linear_link_when_present() {
         .find(|todo| todo.id == bare.id)
         .expect("bare todo in list");
     assert_eq!(bare_in_list.linear, None);
+}
+
+fn list_ids(todos: &[todo_core::Todo]) -> Vec<todo_core::TodoId> {
+    todos.iter().map(|todo| todo.id).collect()
+}
+
+#[tokio::test]
+async fn defer_hides_from_normal_list_but_shows_in_deferred_filter() {
+    let (_database, core) = test_core().await;
+    let a = core.create_todo(CreateTodoInput::new("a")).await.expect("a");
+    let b = core.create_todo(CreateTodoInput::new("b")).await.expect("b");
+
+    let future = Local::now().date_naive() + chrono::Duration::days(7);
+    let future_str = future.format("%Y-%m-%d").to_string();
+    let deferred = core.defer_todo(a.id, &future_str).await.expect("defer a");
+    assert_eq!(deferred.status, Status::Deferred);
+    assert_eq!(deferred.deferred_until, Some(future_str));
+
+    // 전체 목록은 보류를 뺀다.
+    let all = core.list_todos(TodoFilter::default()).await.expect("list all");
+    assert_eq!(list_ids(&all), vec![b.id]);
+
+    // 보류 필터는 보류만 준다.
+    let lane = core
+        .list_todos(TodoFilter {
+            status: Some(Status::Deferred),
+            ..TodoFilter::default()
+        })
+        .await
+        .expect("list deferred");
+    assert_eq!(list_ids(&lane), vec![a.id]);
+}
+
+#[tokio::test]
+async fn a_past_return_date_wakes_the_todo_on_read() {
+    let (_database, core) = test_core().await;
+    let todo = core.create_todo(CreateTodoInput::new("wake me")).await.expect("create");
+    let past = Local::now().date_naive() - chrono::Duration::days(1);
+    core.defer_todo(todo.id, &past.format("%Y-%m-%d").to_string())
+        .await
+        .expect("defer into the past");
+
+    // 읽기가 깨운다. 지난 복귀일이면 todo 로 돌아오고 복귀일은 지워진다.
+    let all = core.list_todos(TodoFilter::default()).await.expect("list");
+    assert_eq!(list_ids(&all), vec![todo.id]);
+    let woken = core.get_todo(todo.id).await.expect("get woken");
+    assert_eq!(woken.status, Status::Todo);
+    assert_eq!(woken.deferred_until, None);
+}
+
+#[tokio::test]
+async fn an_indefinite_defer_never_wakes() {
+    let (_database, core) = test_core().await;
+    let todo = core.create_todo(CreateTodoInput::new("sleep forever")).await.expect("create");
+    core.defer_todo(todo.id, "").await.expect("defer forever");
+
+    let all = core.list_todos(TodoFilter::default()).await.expect("list");
+    assert!(all.is_empty(), "무기한 보류는 전체 목록에 안 나온다");
+    let still = core.get_todo(todo.id).await.expect("get");
+    assert_eq!(still.status, Status::Deferred);
+    assert_eq!(still.deferred_until, None);
+}
+
+#[tokio::test]
+async fn leaving_deferred_clears_the_return_date_and_pushes_linked_done() {
+    let (_database, core) = test_core().await;
+    let todo = core.create_todo(CreateTodoInput::new("deferred then done")).await.expect("create");
+    core.link_linear(todo.id, linear_link("defer-done-issue")).await.expect("link");
+    let future = (Local::now().date_naive() + chrono::Duration::days(30)).format("%Y-%m-%d").to_string();
+    core.defer_todo(todo.id, &future).await.expect("defer");
+
+    // 보류 항목을 done 으로 걸면: done 되고 복귀일이 지워지고 Linear 로 밀린다.
+    let done = core.set_status(todo.id, Status::Done).await.expect("done");
+    assert_eq!(done.status, Status::Done);
+    assert_eq!(done.deferred_until, None);
+    let outbox = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sync_outbox WHERE kind = 'linear_complete'",
+    )
+    .fetch_one(core.pool())
+    .await
+    .expect("count outbox");
+    assert_eq!(outbox, 1);
+}
+
+#[tokio::test]
+async fn deferring_a_linked_todo_never_enqueues_outbox() {
+    let (_database, core) = test_core().await;
+    let todo = core.create_todo(CreateTodoInput::new("linked deferred")).await.expect("create");
+    core.link_linear(todo.id, linear_link("defer-only-issue")).await.expect("link");
+    core.defer_todo(todo.id, "").await.expect("defer");
+
+    let outbox = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sync_outbox")
+        .fetch_one(core.pool())
+        .await
+        .expect("count outbox");
+    assert_eq!(outbox, 0, "보류는 done 이 아니니 아무것도 안 민다");
 }
 
 #[tokio::test]

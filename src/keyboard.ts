@@ -9,7 +9,8 @@ export type InputMode =
   | "link"
   | "search"
   | "palette"
-  | "linear_key";
+  | "linear_key"
+  | "defer";
 
 export interface KeyboardState {
   scopeStack: readonly ShortcutScope[];
@@ -43,6 +44,8 @@ export type Action =
   | { type: "BeginEdit"; id: string }
   | { type: "ToggleDone"; ids: readonly string[] }
   | { type: "ToggleInProgress"; ids: readonly string[] }
+  | { type: "ToggleDefer"; ids: readonly string[] }
+  | { type: "ToggleDeferredLane" }
   | { type: "BeginPriorityChord" }
   | { type: "SetPriority"; ids: readonly string[]; priority: Priority }
   | { type: "BeginDueDate"; ids: readonly string[] }
@@ -171,6 +174,10 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
       return ids.length === 0 ? null : { type: "ToggleDone", ids };
     case "i":
       return ids.length === 0 ? null : { type: "ToggleInProgress", ids };
+    case "s":
+      return ids.length === 0 ? null : { type: "ToggleDefer", ids };
+    case "g":
+      return { type: "ToggleDeferredLane" };
     case "p":
       return ids.length === 0 ? null : { type: "BeginPriorityChord" };
     case "t":

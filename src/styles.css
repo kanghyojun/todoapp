@@ -280,6 +280,69 @@ button.todo-row { cursor: pointer; }
   font-size: 12px;
 }
 
+.lane { margin-top: 18px; }
+
+.lane-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lane-header:hover { color: var(--text); border-color: var(--border-strong); }
+.lane-header kbd { margin-left: auto; }
+.lane-caret { width: 12px; }
+
+.lane-items {
+  border: 1px solid var(--border);
+  border-top: 0;
+  background: var(--bg);
+}
+
+.lane-row {
+  display: grid;
+  grid-template-columns: 1fr 110px 56px;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lane-row:last-child { border-bottom: 0; }
+
+.lane-title {
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.lane-until { color: var(--muted); font-size: 11px; }
+
+.lane-back {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.lane-back:hover { color: var(--accent); border-color: var(--accent); }
+
 .detail-panel {
   position: fixed;
   z-index: 20;

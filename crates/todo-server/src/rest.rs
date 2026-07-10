@@ -13,8 +13,8 @@ use todo_linear::{LinearService, LinearStatus, PendingChoice, PullSummary};
 
 use crate::{
     dto::{
-        CreateTodoRequest, LinearDoneStateRequest, LinearKeyRequest, LinearLinkRequest, ListQuery,
-        UpdateTodoRequest, parse_json, parse_query, parse_todo_id,
+        CreateTodoRequest, DeferRequest, LinearDoneStateRequest, LinearKeyRequest,
+        LinearLinkRequest, ListQuery, UpdateTodoRequest, parse_json, parse_query, parse_todo_id,
     },
     error::ApiError,
 };
@@ -34,6 +34,7 @@ pub(crate) fn router(core: TodoCore, linear: LinearService) -> Router {
             get(get_todo).patch(update_todo).delete(delete_todo),
         )
         .route("/api/v1/todos/{id}/restore", post(restore_todo))
+        .route("/api/v1/todos/{id}/defer", post(defer_todo))
         .route("/api/v1/todos/{id}/link/linear", post(link_linear))
         .route("/api/v1/linear/pull", post(linear_pull))
         .route(
@@ -107,6 +108,17 @@ async fn restore_todo(
     Path(id): Path<String>,
 ) -> Result<Json<Todo>, ApiError> {
     Ok(Json(state.core.restore_todo(parse_todo_id(&id)?).await?))
+}
+
+async fn defer_todo(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    payload: Result<Json<DeferRequest>, JsonRejection>,
+) -> Result<Json<Todo>, ApiError> {
+    let id = parse_todo_id(&id)?;
+    // 본문이 비어도 무기한 보류로 받는다.
+    let request = payload.map(|Json(request)| request).unwrap_or_default();
+    Ok(Json(state.core.defer_todo(id, &request.until).await?))
 }
 
 async fn link_linear(

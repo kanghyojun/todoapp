@@ -12,6 +12,7 @@ const TODO = {
   created_at: "2026-07-10T00:00:00Z",
   updated_at: "2026-07-10T00:00:00Z",
   deleted_at: null,
+  deferred_until: null,
 };
 
 describe("HttpClient", () => {
@@ -149,5 +150,24 @@ describe("HttpClient", () => {
     await client.setLinearKey("lin_api_secret");
     const body: unknown = JSON.parse(String(requests[0]?.body));
     expect(body).toEqual({ api_key: "lin_api_secret" });
+  });
+
+  it("defers with the natural-language date under 'until'", async () => {
+    const requests: { url: string; init?: RequestInit }[] = [];
+    const fetcher = async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      requests.push({ url: String(input), init });
+      return new Response(JSON.stringify({ ...TODO, status: "deferred" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const client = new HttpClient("token", "http://example.test/api/v1", fetcher);
+    const todo = await client.defer(TODO.id, "next week");
+    expect(todo.status).toBe("deferred");
+    expect(requests[0]?.url).toContain(`/todos/${TODO.id}/defer`);
+    expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({ until: "next week" });
   });
 });

@@ -18,6 +18,7 @@ export interface TodoClient {
   setStatus(id: string, status: Status): Promise<Todo>;
   remove(id: string): Promise<void>;
   restore(id: string): Promise<Todo>;
+  defer(id: string, until: string): Promise<Todo>;
   linkLinear(id: string, issueRef: string): Promise<void>;
   pullLinear(): Promise<PullResult>;
   linearStatus(): Promise<LinearStatus>;
@@ -71,7 +72,7 @@ export class NotFoundError extends ApiError {
   }
 }
 
-const STATUSES: readonly Status[] = ["todo", "in_progress", "done"];
+const STATUSES: readonly Status[] = ["todo", "in_progress", "done", "deferred"];
 const PRIORITIES: readonly Priority[] = [
   "none",
   "urgent",
@@ -101,6 +102,7 @@ function decodeTodo(value: unknown): Todo {
     typeof value.created_at !== "string" ||
     typeof value.updated_at !== "string" ||
     !isNullableString(value.deleted_at) ||
+    !isNullableString(value.deferred_until) ||
     !isValidLinear(value.linear)
   ) {
     throw new ApiError("server returned an invalid todo", "invalid_response", 0);
@@ -116,6 +118,7 @@ function decodeTodo(value: unknown): Todo {
     created_at: value.created_at,
     updated_at: value.updated_at,
     deleted_at: value.deleted_at,
+    deferred_until: value.deferred_until,
     linear: decodeLinear(value.linear),
   };
 }
@@ -282,6 +285,15 @@ export class HttpClient implements TodoClient {
     );
   }
 
+  async defer(id: string, until: string): Promise<Todo> {
+    return decodeTodo(
+      await this.request(`/todos/${encodeURIComponent(id)}/defer`, {
+        method: "POST",
+        body: JSON.stringify({ until }),
+      }),
+    );
+  }
+
   async linkLinear(id: string, issueRef: string): Promise<void> {
     await this.request(`/todos/${encodeURIComponent(id)}/link/linear`, {
       method: "POST",
@@ -381,6 +393,10 @@ export class TauriClient implements TodoClient {
 
   async restore(id: string): Promise<Todo> {
     return decodeTodo(await this.request("restore", { id }));
+  }
+
+  async defer(id: string, until: string): Promise<Todo> {
+    return decodeTodo(await this.request("defer", { id, until }));
   }
 
   async linkLinear(id: string, issueRef: string): Promise<void> {

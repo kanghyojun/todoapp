@@ -12,6 +12,7 @@ const TODO = {
   created_at: "2026-07-10T00:00:00Z",
   updated_at: "2026-07-10T00:00:00Z",
   deleted_at: null,
+  deferred_until: null,
   linear: null,
 };
 

@@ -20,6 +20,8 @@ async function start(mount: HTMLElement): Promise<void> {
   const client = await pickClient(
     tauri,
     tauri ? undefined : import.meta.env.VITE_TODO_TOKEN,
+    undefined,
+    tauri ? undefined : import.meta.env.VITE_TODO_API,
   );
   if (client === null) {
     render(

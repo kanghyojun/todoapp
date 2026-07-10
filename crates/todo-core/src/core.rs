@@ -87,6 +87,7 @@ impl TodoCore {
         let row = sqlx::query_as::<_, TodoRow>(
             "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
                     t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
+                    t.deferred_until, \
                     li.identifier AS linear_identifier, li.url AS linear_url \
              FROM todos AS t LEFT JOIN linear_links AS li ON li.todo_id = t.id \
              WHERE t.id = ? AND t.deleted_at IS NULL",
@@ -99,6 +100,10 @@ impl TodoCore {
     }
 
     pub async fn list_todos(&self, filter: TodoFilter) -> Result<Vec<Todo>> {
+        // 읽기가 깨운다. 복귀일이 지난 보류 항목을 먼저 todo 로 되돌린다.
+        // 그래야 어느 클라이언트로 읽어도 똑같이 깨어난다.
+        self.wake_due_deferred().await?;
+
         let TodoFilter {
             status,
             priority,
@@ -119,6 +124,7 @@ impl TodoCore {
             let mut query = QueryBuilder::<Sqlite>::new(
                 "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
                  t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
+                 t.deferred_until, \
                  li.identifier AS linear_identifier, li.url AS linear_url \
                  FROM todos_fts JOIN todos AS t ON t.rowid = todos_fts.rowid \
                  LEFT JOIN linear_links AS li ON li.todo_id = t.id \
@@ -132,6 +138,7 @@ impl TodoCore {
             QueryBuilder::<Sqlite>::new(
                 "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
                  t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
+                 t.deferred_until, \
                  li.identifier AS linear_identifier, li.url AS linear_url \
                  FROM todos AS t LEFT JOIN linear_links AS li ON li.todo_id = t.id \
                  WHERE t.deleted_at IS NULL",
@@ -144,6 +151,12 @@ impl TodoCore {
                 .push(column_prefix)
                 .push("status = ")
                 .push_bind(status.as_db_str());
+        } else {
+            // 상태를 안 고르면(전체) 보류는 뺀다. 보류는 별도 레인으로만 본다.
+            query
+                .push(" AND ")
+                .push(column_prefix)
+                .push("status != 'deferred'");
         }
         if let Some(priority) = priority {
             query
@@ -187,6 +200,68 @@ impl TodoCore {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
+    /// 복귀일이 오늘이거나 지난 보류 항목을 todo 로 되돌린다.
+    /// 무기한(deferred_until IS NULL) 보류는 건드리지 않는다.
+    ///
+    /// 읽기마다 불린다. 그래서 먼저 읽기로 깨울 게 있는지 본 다음,
+    /// 있을 때만 쓴다. 평소엔 깨울 게 없어 쓰기 락을 안 잡는다. 안 그러면
+    /// 동시 list 호출들이 WAL 쓰기 락을 두고 경합해 커넥션 풀이 막힌다.
+    async fn wake_due_deferred(&self) -> Result<()> {
+        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let has_due = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS( \
+               SELECT 1 FROM todos \
+               WHERE status = 'deferred' AND deferred_until IS NOT NULL \
+                 AND deferred_until <= ? AND deleted_at IS NULL)",
+        )
+        .bind(&today)
+        .fetch_one(&self.pool)
+        .await?;
+        if has_due == 0 {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE todos SET status = 'todo', deferred_until = NULL, updated_at = ? \
+             WHERE status = 'deferred' AND deferred_until IS NOT NULL \
+               AND deferred_until <= ? AND deleted_at IS NULL",
+        )
+        .bind(now_string())
+        .bind(today)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 할 일을 보류로 보낸다. `input` 은 복귀일을 자연어로 받는다(마감일과
+    /// 같은 파서). 비면 무기한이다. 보류는 done 이 아니므로 완료 시각을
+    /// 지우고 아웃박스에 아무것도 넣지 않는다. 삭제된 항목은 복구 외 어떤
+    /// 변경도 받지 않는다.
+    pub async fn defer_todo(&self, id: TodoId, input: &str) -> Result<Todo> {
+        let until = parse_due_date(input, Local::now().date_naive())
+            .map_err(|error| Error::InvalidInput(error.to_string()))?;
+        let mut transaction = self.pool.begin().await?;
+        fetch_todo_row(id, &mut transaction).await?;
+        let now = now_string();
+        let deferred_until = until.map(|date| date.format("%Y-%m-%d").to_string());
+        let updated = sqlx::query(
+            "UPDATE todos SET status = 'deferred', deferred_until = ?, \
+             completed_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(deferred_until)
+        .bind(&now)
+        .bind(id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(Error::NotFound(id));
+        }
+        let todo = fetch_todo_row(id, &mut transaction).await?.try_into()?;
+        transaction.commit().await?;
+
+        self.emit(DomainEvent::TodoUpdated(id));
+        Ok(todo)
+    }
+
     pub async fn update_todo(&self, id: TodoId, patch: TodoPatch) -> Result<Todo> {
         let mut transaction = self.pool.begin().await?;
         let current = fetch_todo_row(id, &mut transaction).await?;
@@ -212,9 +287,17 @@ impl TodoCore {
             Some(_) => None,
             None => current.completed_at,
         };
+        // 보류로 남으면(예: 보류 항목의 제목만 편집) 복귀일을 지킨다.
+        // 보류를 벗어나면 항상 복귀일을 지운다. 보류로 보내는 것은
+        // update_todo 가 아니라 defer_todo 가 한다.
+        let deferred_until = if status == Status::Deferred {
+            current.deferred_until
+        } else {
+            None
+        };
         let updated = sqlx::query(
             "UPDATE todos SET title = ?, description = ?, status = ?, priority = ?, due_date = ?, \
-             completed_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+             completed_at = ?, deferred_until = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(title)
         .bind(description)
@@ -222,6 +305,7 @@ impl TodoCore {
         .bind(priority)
         .bind(due_date)
         .bind(completed_at)
+        .bind(deferred_until)
         .bind(&now)
         .bind(id.to_string())
         .execute(&mut *transaction)
@@ -273,8 +357,8 @@ impl TodoCore {
         fetch_todo_row(id, &mut transaction).await?;
         let now = now_string();
         let updated = sqlx::query(
-            "UPDATE todos SET status = 'done', completed_at = ?, updated_at = ? \
-             WHERE id = ? AND deleted_at IS NULL",
+            "UPDATE todos SET status = 'done', completed_at = ?, deferred_until = NULL, \
+             updated_at = ? WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(&now)
         .bind(&now)
@@ -413,6 +497,7 @@ async fn fetch_todo_row(
     sqlx::query_as::<_, TodoRow>(
         "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
                 t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
+                t.deferred_until, \
                 li.identifier AS linear_identifier, li.url AS linear_url \
          FROM todos AS t LEFT JOIN linear_links AS li ON li.todo_id = t.id \
          WHERE t.id = ? AND t.deleted_at IS NULL",
@@ -435,6 +520,8 @@ struct TodoRow {
     created_at: String,
     updated_at: String,
     deleted_at: Option<String>,
+    #[sqlx(default)]
+    deferred_until: Option<String>,
     #[sqlx(default)]
     linear_identifier: Option<String>,
     #[sqlx(default)]
@@ -460,6 +547,7 @@ impl TryFrom<TodoRow> for Todo {
             created_at: row.created_at,
             updated_at: row.updated_at,
             deleted_at: row.deleted_at,
+            deferred_until: row.deferred_until,
             linear: match (row.linear_identifier, row.linear_url) {
                 (Some(identifier), Some(url)) => Some(LinearRef { identifier, url }),
                 _ => None,

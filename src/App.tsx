@@ -47,6 +47,7 @@ const STATUS_LABELS: Record<Status, string> = {
   todo: "todo",
   in_progress: "in progress",
   done: "done",
+  deferred: "deferred",
 };
 
 const PRIORITY_LABELS: Record<Priority, string> = {
@@ -94,18 +95,29 @@ const THEME_LABELS: Record<ThemePreference, string> = {
   dark: "어둡게",
 };
 
+// 인라인 입력창(due·link·linear_key·defer)의 라벨과 안내. 없는 모드는
+// 인라인 편집(create·edit)이나 검색이라 여기 안 들어온다.
+const ACTION_EDITOR: Partial<Record<InputMode, { label: string; placeholder: string }>> = {
+  due: { label: "마감일", placeholder: "tomorrow, fri, 3d, 또는 비움" },
+  link: { label: "Linear 이슈", placeholder: "PI-1234" },
+  linear_key: { label: "Linear API key", placeholder: "lin_api_…" },
+  defer: { label: "보류까지", placeholder: "next week, 3d, 또는 비우면 계속 보류" },
+};
+
 const SHORTCUTS: readonly [string, string][] = [
   ["j / k", "아래 / 위로 이동"],
   ["Enter / Esc", "상세 열기 / 닫기·취소·선택 해제"],
   ["c", "새 todo. Shift+Enter로 연속 생성"],
   ["e", "제목 편집"],
   ["d / i", "done / in progress 토글"],
+  ["s", "보류 토글 (복귀일 입력, 비우면 계속 보류)"],
   ["p u·h·m·l·n", "우선순위 지정"],
   ["t", "마감일 입력"],
   ["x", "선택 토글"],
   ["Backspace", "삭제"],
   ["l / o", "Linear 이슈 연결 / 열기"],
   ["1 / 2 / 3 / 0", "todo / in progress / done / 전체"],
+  ["g", "보류 레인 펼치기·접기"],
   ["/", "검색"],
   ["u", "되돌리기"],
   ["⌘K / Ctrl+K", "커맨드 팔레트"],
@@ -142,6 +154,8 @@ export const App: Component<AppProps> = (props) => {
   const [paletteTodos, setPaletteTodos] = createSignal<Todo[]>([]);
   const [theme, setTheme] = createSignal<ThemePreference>(readPreference(localStorage));
   const [linearStatus, setLinearStatus] = createSignal<LinearStatus | null>(null);
+  const [deferredTodos, setDeferredTodos] = createSignal<Todo[]>([]);
+  const [laneOpen, setLaneOpen] = createSignal(localStorage.getItem("todo.lane") === "open");
   const undo = new UndoStack();
   const rowElements = new Map<string, HTMLButtonElement>();
   let editorInput: HTMLInputElement | undefined;
@@ -149,9 +163,13 @@ export const App: Component<AppProps> = (props) => {
   let paletteRequest = 0;
 
   const currentTodo = createMemo(() => todos()[cursorIndex()]);
-  const detailTodo = createMemo(() =>
-    todos().find((todo) => todo.id === detailId()),
-  );
+  const detailTodo = createMemo(() => {
+    const id = detailId();
+    return (
+      todos().find((todo) => todo.id === id) ??
+      deferredTodos().find((todo) => todo.id === id)
+    );
+  });
   const paletteItems = createMemo<readonly PaletteItem[]>(() => {
     const query = paletteQuery().trim().toLocaleLowerCase();
     const status = linearStatus();
@@ -206,12 +224,29 @@ export const App: Component<AppProps> = (props) => {
       const next = await props.client.list(filter);
       installTodos(next, preferredId);
       setError(null);
+      void loadDeferred();
       return next;
     } catch (reason) {
       setError(messageFrom(reason));
       return [];
     } finally {
       setLoading(false);
+    }
+  }
+
+  // 보류 레인은 별도 목록이다. 복귀일 빠른 순, 무기한(NULL)은 맨 뒤.
+  async function loadDeferred(): Promise<void> {
+    try {
+      const deferred = await props.client.list({ status: "deferred" });
+      deferred.sort((a, b) => {
+        if (a.deferred_until === b.deferred_until) return 0;
+        if (a.deferred_until === null) return 1;
+        if (b.deferred_until === null) return -1;
+        return a.deferred_until < b.deferred_until ? -1 : 1;
+      });
+      setDeferredTodos(deferred);
+    } catch {
+      // 레인은 부가 정보다. 실패해도 본 목록을 막지 않는다.
     }
   }
 
@@ -301,6 +336,14 @@ export const App: Component<AppProps> = (props) => {
         setToast("Linear 키를 저장했습니다.");
         await refreshLinearStatus();
         focusCurrentRow();
+      } else if (mode === "defer") {
+        for (const id of inputTargets()) {
+          await props.client.defer(id, value);
+        }
+        setInputMode("none");
+        setToast(value.trim() === "" ? "계속 보류합니다." : "보류했습니다.");
+        await load();
+        focusCurrentRow();
       } else if (mode === "search") {
         setInputMode("none");
         focusCurrentRow();
@@ -309,6 +352,37 @@ export const App: Component<AppProps> = (props) => {
     } catch (reason) {
       setError(messageFrom(reason));
     }
+  }
+
+  // s: 대상이 보류면 바로 풀고(todo 로), 아니면 복귀일 입력창을 연다.
+  async function toggleDefer(ids: readonly string[]): Promise<void> {
+    const deferredIds = ids.filter((id) =>
+      deferredTodos().some((todo) => todo.id === id),
+    );
+    if (deferredIds.length > 0) {
+      await bringBack(deferredIds);
+      return;
+    }
+    beginInput("defer", "", ids);
+  }
+
+  // 보류를 풀어 todo 로 되돌린다. status 를 바꾸면 코어가 복귀일도 지운다.
+  async function bringBack(ids: readonly string[]): Promise<void> {
+    try {
+      for (const id of ids) {
+        await props.client.setStatus(id, "todo");
+      }
+      setToast("보류를 풀었습니다.");
+      await load();
+    } catch (reason) {
+      setError(messageFrom(reason));
+    }
+  }
+
+  function toggleLane(): void {
+    const next = !laneOpen();
+    setLaneOpen(next);
+    localStorage.setItem("todo.lane", next ? "open" : "closed");
   }
 
   async function toggleStatus(ids: readonly string[], kind: "done" | "in_progress"): Promise<void> {
@@ -539,6 +613,12 @@ export const App: Component<AppProps> = (props) => {
       case "ToggleInProgress":
         await toggleStatus(action.ids, "in_progress");
         break;
+      case "ToggleDefer":
+        await toggleDefer(action.ids);
+        break;
+      case "ToggleDeferredLane":
+        toggleLane();
+        break;
       case "BeginPriorityChord":
         setPriorityChordActive(true);
         setToast("우선순위: u h m l n (Esc 취소)");
@@ -716,32 +796,25 @@ export const App: Component<AppProps> = (props) => {
           </div>
         </Show>
 
-        <Show when={inputMode() === "due" || inputMode() === "link" || inputMode() === "linear_key"}>
-          <div class="inline-editor action-editor">
-            <label for="action-input">
-              {inputMode() === "due"
-                ? "Due date"
-                : inputMode() === "link"
-                  ? "Linear issue"
-                  : "Linear API key"}
-            </label>
-            <input
-              id="action-input"
-              ref={editorInput}
-              type={inputMode() === "linear_key" ? "password" : "text"}
-              autocomplete={inputMode() === "linear_key" ? "off" : undefined}
-              value={inputValue()}
-              placeholder={
-                inputMode() === "due"
-                  ? "tomorrow, fri, 3d, or blank"
-                  : inputMode() === "link"
-                    ? "PI-1234"
-                    : "lin_api_…"
-              }
-              onInput={(event) => setInputValue(event.currentTarget.value)}
-            />
-            <kbd>Enter</kbd>
-          </div>
+        <Show when={ACTION_EDITOR[inputMode()] !== undefined}>
+          {(() => {
+            const editor = () => ACTION_EDITOR[inputMode()];
+            return (
+              <div class="inline-editor action-editor">
+                <label for="action-input">{editor()?.label}</label>
+                <input
+                  id="action-input"
+                  ref={editorInput}
+                  type={inputMode() === "linear_key" ? "password" : "text"}
+                  autocomplete={inputMode() === "linear_key" ? "off" : undefined}
+                  value={inputValue()}
+                  placeholder={editor()?.placeholder}
+                  onInput={(event) => setInputValue(event.currentTarget.value)}
+                />
+                <kbd>Enter</kbd>
+              </div>
+            );
+          })()}
         </Show>
 
         <Show when={props.externalServerError}>
@@ -824,6 +897,48 @@ export const App: Component<AppProps> = (props) => {
             </Show>
           </Show>
         </section>
+
+        <Show when={deferredTodos().length > 0}>
+          <section class="lane" aria-label="보류">
+            <button
+              type="button"
+              class="lane-header"
+              aria-expanded={laneOpen()}
+              onClick={toggleLane}
+            >
+              <span class="lane-caret">{laneOpen() ? "▾" : "▸"}</span>
+              보류 {deferredTodos().length}
+              <kbd>g</kbd>
+            </button>
+            <Show when={laneOpen()}>
+              <div class="lane-items">
+                <For each={deferredTodos()}>
+                  {(todo) => (
+                    <div class="lane-row">
+                      <button
+                        type="button"
+                        class="lane-title"
+                        onClick={() => setDetailId(todo.id)}
+                      >
+                        {todo.title}
+                      </button>
+                      <span class="lane-until">
+                        {todo.deferred_until ?? "계속 보류"}
+                      </span>
+                      <button
+                        type="button"
+                        class="lane-back"
+                        onClick={() => void bringBack([todo.id])}
+                      >
+                        복귀
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </section>
+        </Show>
       </main>
 
       <aside

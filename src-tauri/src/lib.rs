@@ -304,6 +304,15 @@ async fn link_linear(
 }
 
 #[tauri::command]
+async fn defer(
+    id: String,
+    until: String,
+    state: State<'_, ShellState>,
+) -> Result<Todo, CommandError> {
+    Ok(state.core.defer_todo(parse_todo_id(&id)?, &until).await?)
+}
+
+#[tauri::command]
 async fn pull_linear(state: State<'_, ShellState>) -> Result<PullSummary, CommandError> {
     Ok(state.linear.pull().await?)
 }
@@ -428,6 +437,7 @@ pub fn run() {
             set_status,
             delete,
             restore,
+            defer,
             link_linear,
             pull_linear,
             linear_status,

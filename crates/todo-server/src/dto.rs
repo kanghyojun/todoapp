@@ -83,6 +83,14 @@ pub(crate) struct LinearLinkRequest {
     pub(crate) issue_ref: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeferRequest {
+    /// 복귀일을 자연어로 받는다. 비거나 없으면 무기한 보류.
+    #[serde(default)]
+    pub(crate) until: String,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LinearKeyRequest {

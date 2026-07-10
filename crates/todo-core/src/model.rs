@@ -42,6 +42,7 @@ pub enum Status {
     Todo,
     InProgress,
     Done,
+    Deferred,
 }
 
 impl Status {
@@ -50,6 +51,7 @@ impl Status {
             Self::Todo => "todo",
             Self::InProgress => "in_progress",
             Self::Done => "done",
+            Self::Deferred => "deferred",
         }
     }
 
@@ -58,6 +60,7 @@ impl Status {
             "todo" => Ok(Self::Todo),
             "in_progress" => Ok(Self::InProgress),
             "done" => Ok(Self::Done),
+            "deferred" => Ok(Self::Deferred),
             _ => Err(Error::InvalidInput(format!(
                 "unknown status stored in database: {value}"
             ))),
@@ -113,6 +116,9 @@ pub struct Todo {
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    /// 보류 복귀일. status == Deferred 일 때만 의미가 있고, 그마저도
+    /// None 이면 무기한 보류다. 보류가 아니면 항상 None.
+    pub deferred_until: Option<String>,
     /// 읽기 경로에서 조인해 채운다. 링크가 없으면 None.
     pub linear: Option<LinearRef>,
 }

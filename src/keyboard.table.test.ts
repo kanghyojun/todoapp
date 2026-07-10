@@ -30,6 +30,11 @@ describe("스펙 6절 단축키 표의 모든 행", () => {
   it("상태 토글", () => {
     expect(press("d")).toEqual({ type: "ToggleDone", ids: ["b"] });
     expect(press("i")).toEqual({ type: "ToggleInProgress", ids: ["b"] });
+    expect(press("s")).toEqual({ type: "ToggleDefer", ids: ["b"] });
+  });
+
+  it("보류 레인 토글", () => {
+    expect(press("g")).toEqual({ type: "ToggleDeferredLane" });
   });
 
   it("우선순위 코드 5개 전부", () => {
