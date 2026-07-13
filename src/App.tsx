@@ -798,8 +798,11 @@ export const App: Component<AppProps> = (props) => {
         }
         beginInput("link", "", [action.id]);
         break;
-      case "OpenLinearIssue": {
-        const linked = todos().find((todo) => todo.id === action.id);
+      case "OpenLink": {
+        // 둘 다 연결돼 있으면 Linear 를 먼저 연다. 없으면 이메일로 넘어간다.
+        const linked =
+          todos().find((todo) => todo.id === action.id) ??
+          deferredTodos().find((todo) => todo.id === action.id);
         if (linked?.linear) {
           try {
             await props.client.openExternal(linked.linear.url);

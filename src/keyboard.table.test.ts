@@ -53,7 +53,7 @@ describe("스펙 6절 단축키 표의 모든 행", () => {
 
   it("Linear 링크 / 연결 열기", () => {
     expect(press("l")).toEqual({ type: "BeginLinearLink", id: "b" });
-    expect(press("o")).toEqual({ type: "OpenLinearIssue", id: "b" });
+    expect(press("o")).toEqual({ type: "OpenLink", id: "b" });
   });
 
   it("필터는 ⌘1/2/3/4 로만, 맨손 숫자는 무시", () => {

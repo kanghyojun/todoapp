@@ -54,7 +54,7 @@ export type Action =
   | { type: "ToggleSelection"; id: string }
   | { type: "Delete"; ids: readonly string[] }
   | { type: "BeginLinearLink"; id: string }
-  | { type: "OpenLinearIssue"; id: string }
+  | { type: "OpenLink"; id: string }
   | { type: "SetFilter"; status?: Status }
   | { type: "SwitchTab"; direction: "prev" | "next" }
   | { type: "Undo" }
@@ -220,7 +220,7 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
     case "l":
       return id === null ? null : { type: "BeginLinearLink", id };
     case "o":
-      return id === null ? null : { type: "OpenLinearIssue", id };
+      return id === null ? null : { type: "OpenLink", id };
     case "/":
       return { type: "OpenSearch" };
     case "u":
