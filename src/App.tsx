@@ -172,6 +172,7 @@ export const App: Component<AppProps> = (props) => {
   const undo = new UndoStack();
   const rowElements = new Map<string, HTMLButtonElement>();
   let editorInput: HTMLInputElement | undefined;
+  let descEditor: HTMLTextAreaElement | undefined;
   let paletteInput: HTMLInputElement | undefined;
   let paletteRequest = 0;
 
@@ -276,6 +277,15 @@ export const App: Component<AppProps> = (props) => {
 
   function focusEditor(): void {
     queueMicrotask(() => {
+      // 설명은 textarea 다. 기존 내용을 실수로 덮어쓰지 않게
+      // 전체 선택 대신 커서만 끝으로 보낸다.
+      if (inputMode() === "describe") {
+        descEditor?.focus();
+        const end = descEditor?.value.length ?? 0;
+        descEditor?.setSelectionRange(end, end);
+        return;
+      }
+      // 제목 같은 한 줄 입력은 전체 선택이 편하다.
       editorInput?.focus();
       editorInput?.select();
     });
@@ -324,12 +334,21 @@ export const App: Component<AppProps> = (props) => {
         if (keepCreating) {
           focusEditor();
         } else {
-          focusCurrentRow();
+          // 만들자마자 상세를 열고 설명 편집으로 넘어간다.
+          setDetailId(created.id);
+          beginInput("describe", created.description, [created.id]);
         }
       } else if (mode === "edit") {
         const id = inputTargets()[0];
         if (id === undefined) return;
         await props.client.update(id, { title: value });
+        setInputMode("none");
+        await load(filterForCurrentView(), id);
+        focusCurrentRow();
+      } else if (mode === "describe") {
+        const id = inputTargets()[0];
+        if (id === undefined) return;
+        await props.client.update(id, { description: value });
         setInputMode("none");
         await load(filterForCurrentView(), id);
         focusCurrentRow();
@@ -652,6 +671,16 @@ export const App: Component<AppProps> = (props) => {
       case "BeginEdit": {
         const todo = todos().find((item) => item.id === action.id);
         if (todo !== undefined) beginInput("edit", todo.title, [todo.id]);
+        break;
+      }
+      case "BeginEditDescription": {
+        const todo =
+          todos().find((item) => item.id === action.id) ??
+          deferredTodos().find((item) => item.id === action.id);
+        if (todo !== undefined) {
+          setDetailId(todo.id);
+          beginInput("describe", todo.description, [todo.id]);
+        }
         break;
       }
       case "ToggleDone":
@@ -1040,7 +1069,27 @@ export const App: Component<AppProps> = (props) => {
                 <span>DETAIL</span><kbd>Esc</kbd>
               </div>
               <h1 id="detail-heading">{todo().title}</h1>
-              <p class="description">{todo().description || "설명이 없습니다."}</p>
+              <div class="detail-body">
+              <Show
+                when={inputMode() === "describe" && inputTargets()[0] === todo().id}
+                fallback={
+                  <p
+                    class="description"
+                    onClick={() => void execute({ type: "BeginEditDescription", id: todo().id })}
+                    title="눌러서 편집 (E)"
+                  >
+                    {todo().description || "설명이 없습니다."}
+                  </p>
+                }
+              >
+                <textarea
+                  ref={descEditor}
+                  class="description-editor"
+                  value={inputValue()}
+                  onInput={(event) => setInputValue(event.currentTarget.value)}
+                  placeholder="설명을 적으세요. ⌘Enter 저장, Esc 취소"
+                />
+              </Show>
               <dl>
                 <div><dt>상태</dt><dd>{STATUS_LABELS[todo().status]}</dd></div>
                 <div><dt>우선순위</dt><dd>{PRIORITY_LABELS[todo().priority]}</dd></div>

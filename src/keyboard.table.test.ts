@@ -25,6 +25,7 @@ describe("스펙 6절 단축키 표의 모든 행", () => {
   it("생성/편집", () => {
     expect(press("c")).toEqual({ type: "BeginCreate" });
     expect(press("e")).toEqual({ type: "BeginEdit", id: "b" });
+    expect(press("E")).toEqual({ type: "BeginEditDescription", id: "b" });
   });
 
   it("상태 토글", () => {
@@ -120,5 +121,28 @@ describe("함정들", () => {
 
   it("빈 목록에서 d 를 눌러도 터지지 않는다", () => {
     expect(press("d", { todoIds: [], cursorIndex: 0 })).toBeNull();
+  });
+
+  it("빈 목록에서 E 를 눌러도 터지지 않는다", () => {
+    expect(press("E", { todoIds: [], cursorIndex: 0 })).toBeNull();
+  });
+
+  it("설명 편집은 여러 줄이라 맨 Enter 는 줄바꿈, ⌘/Ctrl+Enter 로만 저장", () => {
+    const describe = { inputMode: "describe" as const };
+    expect(press("Enter", describe, { focus: "text" })).toBeNull();
+    expect(press("Enter", describe, { focus: "text", metaKey: true })).toEqual({
+      type: "SubmitInput",
+      keepCreating: false,
+    });
+    expect(press("Enter", describe, { focus: "text", ctrlKey: true })).toEqual({
+      type: "SubmitInput",
+      keepCreating: false,
+    });
+  });
+
+  it("설명 편집 중 Esc 는 취소", () => {
+    expect(press("Escape", { inputMode: "describe" }, { focus: "text" })).toEqual({
+      type: "CancelInput",
+    });
   });
 });

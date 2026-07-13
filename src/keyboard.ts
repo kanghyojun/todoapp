@@ -5,6 +5,7 @@ export type InputMode =
   | "none"
   | "create"
   | "edit"
+  | "describe"
   | "due"
   | "link"
   | "search"
@@ -42,6 +43,7 @@ export type Action =
   | { type: "SubmitInput"; keepCreating: boolean }
   | { type: "BeginCreate" }
   | { type: "BeginEdit"; id: string }
+  | { type: "BeginEditDescription"; id: string }
   | { type: "ToggleDone"; ids: readonly string[] }
   | { type: "ToggleInProgress"; ids: readonly string[] }
   | { type: "ToggleDefer"; ids: readonly string[] }
@@ -107,6 +109,13 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
       if (state.inputMode === "palette") {
         return { type: "ChoosePaletteItem" };
       }
+      // 설명은 여러 줄이다. 맨 Enter 는 줄바꿈으로 흘려보내고
+      // ⌘/Ctrl+Enter 로만 저장한다.
+      if (state.inputMode === "describe") {
+        return event.metaKey === true || event.ctrlKey === true
+          ? { type: "SubmitInput", keepCreating: false }
+          : null;
+      }
       return {
         type: "SubmitInput",
         keepCreating: state.inputMode === "create" && event.shiftKey === true,
@@ -167,6 +176,8 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
       return { type: "BeginCreate" };
     case "e":
       return id === null ? null : { type: "BeginEdit", id };
+    case "E":
+      return id === null ? null : { type: "BeginEditDescription", id };
     case "d":
       return ids.length === 0 ? null : { type: "ToggleDone", ids };
     case "i":
