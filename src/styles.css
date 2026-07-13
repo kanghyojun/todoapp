@@ -764,6 +764,11 @@ dd { margin: 0; overflow-wrap: anywhere; }
   white-space: nowrap;
 }
 
+/* 메일 본문은 넓게 봐야 읽힌다. todo 상세(420px)와 달리 메일 상세만 800px. */
+.detail-panel.mail-detail {
+  width: min(800px, 100vw);
+}
+
 .mail-detail-from {
   color: var(--muted);
   font-size: 0.85rem;
