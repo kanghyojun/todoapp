@@ -4965,11 +4965,13 @@ name = "todo"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "open",
  "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
  "todo-core",
+ "todo-gmail",
  "todo-linear",
  "todo-server",
  "tokio",
@@ -4983,6 +4985,25 @@ dependencies = [
  "serde",
  "sqlx",
  "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "todo-gmail"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "keyring",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror 2.0.18",
+ "todo-core",
  "tokio",
  "uuid",
 ]

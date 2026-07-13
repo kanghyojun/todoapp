@@ -1,6 +1,6 @@
 import type { Priority, Status } from "./domain";
 
-export type ShortcutScope = "global" | "todo" | "palette" | "help";
+export type ShortcutScope = "global" | "todo" | "mail" | "palette" | "help";
 export type InputMode =
   | "none"
   | "create"
@@ -130,9 +130,6 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
   if (event.key === "?") {
     return { type: "OpenHelp" };
   }
-  if (event.key === "/") {
-    return { type: "OpenSearch" };
-  }
   if (topScope !== "todo") {
     return null;
   }
@@ -198,6 +195,8 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
       return { type: "SetFilter", status: "done" };
     case "4":
       return { type: "SetFilter" };
+    case "/":
+      return { type: "OpenSearch" };
     case "u":
       return { type: "Undo" };
     default:
