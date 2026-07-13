@@ -10,9 +10,9 @@ import {
 } from "solid-js";
 import type { TodoClient } from "./client";
 import type { EmailRef, Filter, LinearStatus, Priority, Status, Todo } from "./domain";
-import { MailView, type MailOpenRequest } from "./mail/MailView";
+import { MailView } from "./mail/MailView";
 import type { GmailClient } from "./mail/client";
-import type { MailListItem } from "./mail/domain";
+import type { MailBody, MailListItem } from "./mail/domain";
 import {
   handleKey,
   type Action,
@@ -179,7 +179,13 @@ export const App: Component<AppProps> = (props) => {
   // Command 을 누르고 있으면 필터 칩 힌트를 ⌘1 처럼 보여준다.
   const [metaHeld, setMetaHeld] = createSignal(false);
   const [activeTab, setActiveTab] = createSignal<Tab>("todo");
-  const [mailOpenRequest, setMailOpenRequest] = createSignal<MailOpenRequest | undefined>();
+  // o 로 연 이메일은 탭 전환 없이 todo 뷰 위에 드로어로 띄운다.
+  const [mailPreview, setMailPreview] = createSignal<{
+    subject: string;
+    from_name: string;
+    from_email: string;
+  } | null>(null);
+  const [mailPreviewBody, setMailPreviewBody] = createSignal<MailBody | null>(null);
   // 메일 상세가 열려 있으면 할 일 상세를 그 폭만큼 왼쪽으로 밀어 나란히 세운다.
   const [mailDetailOpen, setMailDetailOpen] = createSignal(false);
   const undo = new UndoStack();
@@ -188,7 +194,7 @@ export const App: Component<AppProps> = (props) => {
   let descEditor: HTMLTextAreaElement | undefined;
   let paletteInput: HTMLInputElement | undefined;
   let paletteRequest = 0;
-  let mailOpenNonce = 0;
+  let mailPreviewEl: HTMLElement | undefined;
 
   const currentTodo = createMemo(() => todos()[cursorIndex()]);
   const detailTodo = createMemo(() => {
@@ -293,17 +299,32 @@ export const App: Component<AppProps> = (props) => {
     }
   }
 
+  // 탭은 그대로 두고, todo 뷰 위에 메일 상세 드로어를 띄운다. 스냅샷으로
+  // 헤더를 먼저 채우고 본문은 받아서 채운다. 열자마자 포커스를 줘서 j/k 로
+  // 본문을 스크롤할 수 있게 한다.
   function openLinkedEmail(email: EmailRef): void {
-    mailOpenNonce += 1;
-    setActiveTab("mail");
-    setMailOpenRequest({
-      accountId: email.account_id,
-      gmailId: email.gmail_id,
+    const gmail = props.gmailClient;
+    if (gmail === undefined) {
+      setToast("메일 계정이 연결돼 있지 않습니다.");
+      return;
+    }
+    setMailPreview({
       subject: email.subject,
-      fromName: email.from_name,
-      fromEmail: email.from_email,
-      nonce: mailOpenNonce,
+      from_name: email.from_name,
+      from_email: email.from_email,
     });
+    setMailPreviewBody(null);
+    gmail
+      .getBody(email.account_id, email.gmail_id)
+      .then((loaded) => setMailPreviewBody(loaded))
+      .catch(() => setToast("메일을 찾을 수 없습니다."));
+    queueMicrotask(() => mailPreviewEl?.focus());
+  }
+
+  function closeMailPreview(): void {
+    setMailPreview(null);
+    setMailPreviewBody(null);
+    focusCurrentRow();
   }
 
   // 필터 칩 개수. 전체(status 미지정)는 서버에서 보류를 빼므로
@@ -854,6 +875,24 @@ export const App: Component<AppProps> = (props) => {
 
   function onKeyDown(event: KeyboardEvent): void {
     if (event.metaKey || event.key === "Meta") setMetaHeld(true);
+    // 상세 패널이 포커스돼 있으면 j/k 로 그 패널 본문을 스크롤한다(리스트 이동 대신).
+    if ((event.key === "j" || event.key === "k") && !isTextTarget(event.target)) {
+      const active = document.activeElement as HTMLElement | null;
+      const panel = active?.closest?.(".detail-panel");
+      if (panel instanceof HTMLElement) {
+        const scroller =
+          panel.querySelector<HTMLElement>(".detail-body, .mail-body") ?? panel;
+        scroller.scrollBy({ top: event.key === "j" ? 80 : -80 });
+        event.preventDefault();
+        return;
+      }
+    }
+    // 메일 미리보기가 열려 있으면 Esc 로 닫는다(리스트/할 일 상세보다 먼저).
+    if (event.key === "Escape" && mailPreview() !== null) {
+      closeMailPreview();
+      event.preventDefault();
+      return;
+    }
     const shortcutEvent: ShortcutKeyEvent = {
       key: event.key,
       at: performance.now(),
@@ -892,10 +931,9 @@ export const App: Component<AppProps> = (props) => {
     setMetaHeld(false);
   }
 
-  // 메일 탭을 벗어나면 한 번 쓴 열기 요청을 비운다. 안 그러면 MailView 가
-  // 탭 전환 때마다 remount 되면서 낡은 요청으로 옛 메일을 다시 열어버린다.
+  // 메일 미리보기는 todo 뷰 위 드로어라, 탭을 벗어나면 닫는다.
   createEffect(() => {
-    if (activeTab() !== "mail") setMailOpenRequest(undefined);
+    if (activeTab() !== "todo") setMailPreview(null);
   });
 
   onMount(() => {
@@ -959,7 +997,6 @@ export const App: Component<AppProps> = (props) => {
             client={client()}
             metaHeld={metaHeld()}
             onCreateTodo={createTodoFromEmail}
-            openRequest={mailOpenRequest()}
             onDetailOpenChange={setMailDetailOpen}
           />
         )}
@@ -1162,9 +1199,13 @@ export const App: Component<AppProps> = (props) => {
 
       <aside
         class="detail-panel"
-        classList={{ open: detailTodo() !== undefined, shifted: mailDetailOpen() }}
+        classList={{
+          open: detailTodo() !== undefined,
+          shifted: mailDetailOpen() || mailPreview() !== null,
+        }}
         aria-hidden={detailTodo() === undefined}
         aria-labelledby="detail-heading"
+        tabindex="-1"
       >
         <Show when={detailTodo()}>
           {(todo) => (
@@ -1240,6 +1281,56 @@ export const App: Component<AppProps> = (props) => {
                   )}
                 </Show>
               </dl>
+              </div>
+            </>
+          )}
+        </Show>
+      </aside>
+
+      {/* o 로 연 이메일. 탭 전환 없이 todo 뷰 위에 할 일 상세와 나란히 뜬다. */}
+      <aside
+        class="detail-panel mail-detail"
+        classList={{ open: activeTab() === "todo" && mailPreview() !== null }}
+        aria-hidden={mailPreview() === null}
+        tabindex="-1"
+        ref={(element) => (mailPreviewEl = element)}
+      >
+        <Show when={activeTab() === "todo" ? mailPreview() : undefined}>
+          {(header) => (
+            <>
+              <div class="panel-header">
+                <span>MAIL</span>
+                <kbd>Esc</kbd>
+              </div>
+              <h1>{header().subject || "(제목 없음)"}</h1>
+              <p class="mail-detail-from">
+                {header().from_name} &lt;{header().from_email}&gt;
+              </p>
+              <div class="mail-body">
+                <Show
+                  when={mailPreviewBody()}
+                  fallback={<p class="mail-loading">본문을 불러오는 중…</p>}
+                >
+                  {(loaded) => (
+                    <Show
+                      when={loaded().body_text}
+                      fallback={
+                        <Show when={loaded().body_html} fallback={<p>본문이 없습니다.</p>}>
+                          {(html) => (
+                            <iframe
+                              class="mail-body-html"
+                              sandbox=""
+                              srcdoc={html()}
+                              title="메일 본문"
+                            />
+                          )}
+                        </Show>
+                      }
+                    >
+                      {(text) => <pre class="mail-body-text">{text()}</pre>}
+                    </Show>
+                  )}
+                </Show>
               </div>
             </>
           )}
