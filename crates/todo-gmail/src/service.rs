@@ -8,8 +8,8 @@ use chrono::{SecondsFormat, TimeDelta, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use tokio::sync::{RwLock, broadcast};
 use todo_core::TodoCore;
+use tokio::sync::{RwLock, broadcast};
 
 use crate::error::Error;
 use crate::model::{GmailAccount, MailBody, MailEvent, MailFilter, MailListItem, SyncSummary};
@@ -103,7 +103,9 @@ impl GmailService {
             oauth::fetch_profile(&self.client, &self.gmail_base, &token.access_token).await?;
         self.tokens.set(&profile.email, &refresh)?;
         let account = store::insert_account(self.core.pool(), &profile.email).await?;
-        store::set_history_id(self.core.pool(), &account.id, &profile.history_id).await?;
+        // history_id 를 여기서 심지 않는다. 심으면 첫 sync_account 가 incremental 로
+        // 빠져 전체 백필(initial_sync)을 건너뛰고, 등록 직후라 변경분이 없어
+        // 기존 메일을 하나도 못 가져온다. 백필이 끝에서 history_id 를 저장한다.
         self.cache_access_token(&profile.email, &token.access_token, token.expires_in)
             .await;
         self.emit();
@@ -125,10 +127,7 @@ impl GmailService {
 
     async fn incremental_sync(&self, account: &GmailAccount) -> Result<SyncSummary, Error> {
         let token = self.access_token(&account.email).await?;
-        let start = account
-            .history_id
-            .as_deref()
-            .ok_or(Error::HistoryExpired)?;
+        let start = account.history_id.as_deref().ok_or(Error::HistoryExpired)?;
         let url = format!(
             "{}/users/me/history?startHistoryId={}\
              &historyTypes=messageAdded&historyTypes=messageDeleted\
@@ -177,11 +176,25 @@ impl GmailService {
                 summary.updated += 1;
             }
             for change in record.labels_added {
-                store::apply_label_change(pool, &account.id, &change.message.id, &change.label_ids, true).await?;
+                store::apply_label_change(
+                    pool,
+                    &account.id,
+                    &change.message.id,
+                    &change.label_ids,
+                    true,
+                )
+                .await?;
                 summary.updated += 1;
             }
             for change in record.labels_removed {
-                store::apply_label_change(pool, &account.id, &change.message.id, &change.label_ids, false).await?;
+                store::apply_label_change(
+                    pool,
+                    &account.id,
+                    &change.message.id,
+                    &change.label_ids,
+                    false,
+                )
+                .await?;
                 summary.updated += 1;
             }
         }
@@ -211,8 +224,7 @@ impl GmailService {
                 self.emit();
             }
         }
-        let profile =
-            oauth::fetch_profile(&self.client, &self.gmail_base, &token).await?;
+        let profile = oauth::fetch_profile(&self.client, &self.gmail_base, &token).await?;
         store::set_history_id(self.core.pool(), &account.id, &profile.history_id).await?;
         self.emit();
         Ok(summary)
@@ -350,7 +362,10 @@ impl GmailService {
                 return Err(Error::InvalidInput(format!("unknown outbox kind: {other}")));
             }
         };
-        let url = format!("{}/users/me/messages/{}/modify", self.gmail_base, row.gmail_id);
+        let url = format!(
+            "{}/users/me/messages/{}/modify",
+            self.gmail_base, row.gmail_id
+        );
         let response = self
             .client
             .post(url)
@@ -458,9 +473,10 @@ impl GmailService {
     async fn access_token(&self, email: &str) -> Result<String, Error> {
         let now = Utc::now().timestamp();
         if let Some((token, expiry)) = self.access_cache.read().await.get(email).cloned()
-            && expiry > now {
-                return Ok(token);
-            }
+            && expiry > now
+        {
+            return Ok(token);
+        }
         let (client_id, client_secret) = self.require_credentials().await?;
         let refresh = self.tokens.get(email)?.ok_or(Error::NotConfigured)?;
         match oauth::refresh_token(
@@ -564,11 +580,12 @@ fn urlencode(value: &str) -> String {
 fn parse_from(value: &str) -> (String, String) {
     let value = value.trim();
     if let Some(start) = value.rfind('<')
-        && let Some(end) = value[start..].find('>') {
-            let email = value[start + 1..start + end].trim().to_owned();
-            let name = value[..start].trim().trim_matches('"').trim().to_owned();
-            return (name, email);
-        }
+        && let Some(end) = value[start..].find('>')
+    {
+        let email = value[start + 1..start + end].trim().to_owned();
+        let name = value[..start].trim().trim_matches('"').trim().to_owned();
+        return (name, email);
+    }
     (String::new(), value.to_owned())
 }
 
@@ -672,14 +689,17 @@ struct PartBody {
 fn walk_part(part: &BodyPart, text: &mut Option<String>, html: &mut Option<String>) {
     if part.mime_type == "text/plain" && text.is_none() {
         if let Some(body) = &part.body
-            && let Some(data) = &body.data {
-                *text = decode_base64url(data);
-            }
-    } else if part.mime_type == "text/html" && html.is_none()
+            && let Some(data) = &body.data
+        {
+            *text = decode_base64url(data);
+        }
+    } else if part.mime_type == "text/html"
+        && html.is_none()
         && let Some(body) = &part.body
-            && let Some(data) = &body.data {
-                *html = decode_base64url(data);
-            }
+        && let Some(data) = &body.data
+    {
+        *html = decode_base64url(data);
+    }
     for child in &part.parts {
         walk_part(child, text, html);
     }

@@ -92,7 +92,9 @@ async fn complete_auth_stores_account_and_refresh_token() {
         .await
         .expect("complete auth");
     assert_eq!(account.email, "me@x.com");
-    assert_eq!(account.history_id.as_deref(), Some("12345"));
+    // 등록 시점엔 history_id 를 심지 않는다. 첫 sync 가 전체 백필을 타야 하기 때문이다.
+    // history_id 는 initial_sync 가 끝에서 저장한다.
+    assert_eq!(account.history_id, None);
     assert_eq!(
         harness.tokens.get("me@x.com").unwrap().as_deref(),
         Some("rt-1")
@@ -180,6 +182,71 @@ async fn initial_sync_fetches_and_stores_messages() {
         .await
         .unwrap();
     assert_eq!(refreshed.history_id.as_deref(), Some("999"));
+}
+
+// 회귀: 계정을 추가(complete_auth)한 직후의 첫 sync 는 전체 백필(initial_sync)을
+// 타야 한다. complete_auth 가 history_id 를 미리 심으면 첫 sync 가 incremental 로
+// 빠지고, 등록 직후라 변경분이 없어 0건으로 끝나며 기존 메일을 하나도 못 가져온다.
+// 실제 Gmail 처럼 /history 는 200 OK + 빈 history 로 응답시켜 그 경로를 재현한다.
+#[tokio::test]
+async fn add_account_then_first_sync_backfills_existing_mail() {
+    let harness = harness().await;
+    mount_token(&harness.mock).await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "emailAddress": "me@x.com", "historyId": "12345"
+        })))
+        .mount(&harness.mock)
+        .await;
+    // 등록 직후라 새 변경분이 없다. Gmail 은 200 에 빈 history 를 준다(404 아님).
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "historyId": "12345"
+        })))
+        .mount(&harness.mock)
+        .await;
+    // 계정에 이미 쌓여 있던 메일. initial_sync 만이 이걸 가져온다.
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [ { "id": "old1", "threadId": "t1" } ],
+            "resultSizeEstimate": 1
+        })))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages/old1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "old1", "threadId": "t1",
+            "labelIds": ["INBOX"],
+            "snippet": "an existing mail",
+            "internalDate": "1699000000000",
+            "payload": { "headers": [
+                { "name": "From", "value": "Lee <lee@x.com>" },
+                { "name": "Subject", "value": "old subject" }
+            ] }
+        })))
+        .mount(&harness.mock)
+        .await;
+
+    let account = harness
+        .service
+        .complete_auth("code-1", "verifier-1", "http://127.0.0.1:1234")
+        .await
+        .expect("complete auth");
+    harness.service.sync_account(&account.id).await.unwrap();
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gmail_messages WHERE account_id = ?")
+        .bind(&account.id)
+        .fetch_one(harness.core.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "계정 추가 후 첫 sync 는 기존 메일을 전체 백필해야 한다"
+    );
 }
 
 async fn seed_message(
@@ -297,12 +364,13 @@ async fn expired_history_falls_back_to_initial_sync() {
         .await;
 
     harness.service.sync_account(&account.id).await.unwrap();
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND gmail_id = 'm9'")
-            .bind(&account.id)
-            .fetch_one(harness.core.pool())
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND gmail_id = 'm9'",
+    )
+    .bind(&account.id)
+    .fetch_one(harness.core.pool())
+    .await
+    .unwrap();
     assert_eq!(count, 1);
 }
 
@@ -493,14 +561,19 @@ async fn set_read_enqueues_and_pushes() {
     mount_token(&harness.mock).await;
     seed_message(&harness.core, &account.id, "m1", 1, 1).await;
 
-    harness.service.set_read(&account.id, "m1", true).await.unwrap();
+    harness
+        .service
+        .set_read(&account.id, "m1", true)
+        .await
+        .unwrap();
     // 읽음 처리: is_unread = 0
-    let is_unread: i64 =
-        sqlx::query_scalar("SELECT is_unread FROM gmail_messages WHERE account_id = ? AND gmail_id = 'm1'")
-            .bind(&account.id)
-            .fetch_one(harness.core.pool())
-            .await
-            .unwrap();
+    let is_unread: i64 = sqlx::query_scalar(
+        "SELECT is_unread FROM gmail_messages WHERE account_id = ? AND gmail_id = 'm1'",
+    )
+    .bind(&account.id)
+    .fetch_one(harness.core.pool())
+    .await
+    .unwrap();
     assert_eq!(is_unread, 0);
 
     Mock::given(method("POST"))
