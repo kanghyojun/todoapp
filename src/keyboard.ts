@@ -56,6 +56,7 @@ export type Action =
   | { type: "BeginLinearLink"; id: string }
   | { type: "OpenLinearIssue"; id: string }
   | { type: "SetFilter"; status?: Status }
+  | { type: "SwitchTab"; direction: "prev" | "next" }
   | { type: "Undo" }
   | { type: "OpenPalette" }
   | { type: "CloseOverlay" }
@@ -139,8 +140,30 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
   if (event.key === "?") {
     return { type: "OpenHelp" };
   }
+  // 탭 전환은 어느 탭에서든 되는 전역 동작이다. [ 이전, ] 다음.
+  if (event.key === "[") {
+    return { type: "SwitchTab", direction: "prev" };
+  }
+  if (event.key === "]") {
+    return { type: "SwitchTab", direction: "next" };
+  }
   if (topScope !== "todo") {
     return null;
+  }
+
+  // 필터 전환은 ⌘/Ctrl + 숫자로만. 맨손 1~4 는 무시한다.
+  // (칩에는 개수를 보여주고, ⌘ 를 눌렀을 때만 단축키 힌트를 띄운다.)
+  if (event.metaKey === true || event.ctrlKey === true) {
+    switch (event.key) {
+      case "1":
+        return { type: "SetFilter", status: "todo" };
+      case "2":
+        return { type: "SetFilter", status: "in_progress" };
+      case "3":
+        return { type: "SetFilter", status: "done" };
+      case "4":
+        return { type: "SetFilter" };
+    }
   }
 
   // p 로 조합을 연 뒤에는 다음 키를 기다린다. 만료가 없으니
@@ -198,14 +221,6 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
       return id === null ? null : { type: "BeginLinearLink", id };
     case "o":
       return id === null ? null : { type: "OpenLinearIssue", id };
-    case "1":
-      return { type: "SetFilter", status: "todo" };
-    case "2":
-      return { type: "SetFilter", status: "in_progress" };
-    case "3":
-      return { type: "SetFilter", status: "done" };
-    case "4":
-      return { type: "SetFilter" };
     case "/":
       return { type: "OpenSearch" };
     case "u":

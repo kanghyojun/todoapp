@@ -12,6 +12,8 @@ export type MailKeyAction =
 export interface MailKeyState {
   focus: "text" | "other";
   detailOpen: boolean;
+  // ⌘ 또는 Ctrl 이 눌린 상태. 폴더 전환(⌘1/2/3)을 가른다.
+  meta: boolean;
 }
 
 // Superhuman 식 트리아지 단축키. ⌘K/? 및 탭 전환은 전역(App)에서 처리한다.
@@ -26,6 +28,20 @@ export function handleMailKey(
   if (state.focus === "text") {
     return null;
   }
+  // 폴더 전환은 ⌘/Ctrl + 숫자로만. 맨손 숫자는 무시한다(todo 필터와 일관).
+  // ⌘K·[·] 같은 다른 조합은 여기서 null 을 내고 App 전역이 처리한다.
+  if (state.meta) {
+    switch (key) {
+      case "1":
+        return { type: "SetFolder", folder: "inbox" };
+      case "2":
+        return { type: "SetFolder", folder: "archive" };
+      case "3":
+        return { type: "SetFolder", folder: "all" };
+      default:
+        return null;
+    }
+  }
   switch (key) {
     case "j":
       return { type: "Move", delta: 1 };
@@ -37,12 +53,6 @@ export function handleMailKey(
       return { type: "Archive" };
     case "u":
       return { type: "ToggleRead" };
-    case "1":
-      return { type: "SetFolder", folder: "inbox" };
-    case "2":
-      return { type: "SetFolder", folder: "archive" };
-    case "3":
-      return { type: "SetFolder", folder: "all" };
     case "/":
       return { type: "OpenSearch" };
     default:

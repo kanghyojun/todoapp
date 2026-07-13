@@ -127,8 +127,19 @@ kbd {
   align-self: stretch;
   padding: 0 14px;
   border: 0;
-  border-bottom: 2px solid var(--accent);
+  border-bottom: 2px solid transparent;
   background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tabbar button:hover {
+  color: var(--text);
+}
+
+.tabbar button.active {
+  border-bottom-color: var(--accent);
   color: var(--text-strong);
   font-weight: 700;
 }
@@ -159,6 +170,16 @@ kbd {
 .filter-chip.active {
   border-color: var(--border-strong);
   background: var(--bg-raised);
+  color: var(--text-strong);
+}
+
+.chip-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-chip.active .chip-count {
   color: var(--text-strong);
 }
 
@@ -254,7 +275,6 @@ button.todo-row { cursor: pointer; }
 
 .row-help { color: var(--muted); font-size: 10px; }
 
-.linear-link {
   padding: 0;
   border: 0;
   background: transparent;
@@ -356,7 +376,6 @@ button.todo-row { cursor: pointer; }
   transform: translateX(100%);
   opacity: 0;
   pointer-events: none;
-  transition: transform 160ms ease-out, opacity 160ms ease-out;
 }
 
 .detail-panel.open {
@@ -495,7 +514,8 @@ dd { margin: 0; overflow-wrap: anywhere; }
 
 @media (max-width: 760px) {
   .shortcut-hint { display: none; }
-  .todo-view { padding-inline: 12px; }
+  .todo-view,
+  .mail-view { padding-inline: 12px; }
   .filter-row { overflow-x: auto; }
   .todo-row { grid-template-columns: 20px minmax(120px, 1fr) 72px 84px; }
   .todo-row time { display: none; }
@@ -513,6 +533,8 @@ dd { margin: 0; overflow-wrap: anywhere; }
   flex-direction: column;
   gap: 0.75rem;
   min-height: 0;
+  max-width: 1180px;
+  padding: 22px 24px 80px;
 }
 
 .mail-toolbar {
@@ -619,16 +641,15 @@ dd { margin: 0; overflow-wrap: anywhere; }
 }
 
 .mail-row {
-  display: grid;
-  grid-template-columns: minmax(8rem, 12rem) minmax(10rem, 1fr) auto auto;
-  align-items: baseline;
-  gap: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
   width: 100%;
   text-align: left;
   background: none;
   border: none;
   border-left: 3px solid transparent;
-  padding: 0.45rem 0.7rem;
+  padding: 0.5rem 0.7rem;
   font: inherit;
   color: var(--text);
   cursor: pointer;
@@ -642,25 +663,51 @@ dd { margin: 0; overflow-wrap: anywhere; }
   background: var(--row-selected);
 }
 
-.mail-row.unread .mail-from,
+/* 각 줄은 가로 배치. 제목 줄과 발신자·본문 줄. */
+.mail-row-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* 1줄: 제목 크게. 2줄: 발신자·스니펫 작게. */
+.mail-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.95rem;
+  color: var(--text-strong);
+}
+
 .mail-row.unread .mail-subject {
+  font-weight: 700;
+}
+
+.mail-row-bottom {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.mail-from {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.mail-row.unread .mail-from {
   color: var(--text-strong);
   font-weight: 600;
 }
 
-.mail-from {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mail-subject {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .mail-snippet {
+  flex: 1;
+  min-width: 0;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -668,13 +715,17 @@ dd { margin: 0; overflow-wrap: anywhere; }
 }
 
 .mail-account-tag {
+  flex-shrink: 0;
+  margin-left: auto;
   color: var(--muted);
   font-size: 0.75rem;
 }
 
 .mail-date {
+  flex-shrink: 0;
+  margin-left: auto;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   white-space: nowrap;
 }
 

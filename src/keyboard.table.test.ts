@@ -51,16 +51,27 @@ describe("스펙 6절 단축키 표의 모든 행", () => {
     expect(press("Backspace")).toEqual({ type: "Delete", ids: ["b"] });
   });
 
-  it("Linear 링크 / 열기", () => {
+  it("Linear 링크 / 연결 열기", () => {
     expect(press("l")).toEqual({ type: "BeginLinearLink", id: "b" });
     expect(press("o")).toEqual({ type: "OpenLinearIssue", id: "b" });
   });
 
-  it("필터 1/2/3/4", () => {
-    expect(press("1")).toEqual({ type: "SetFilter", status: "todo" });
-    expect(press("2")).toEqual({ type: "SetFilter", status: "in_progress" });
-    expect(press("3")).toEqual({ type: "SetFilter", status: "done" });
-    expect(press("4")).toEqual({ type: "SetFilter" });
+  it("필터는 ⌘1/2/3/4 로만, 맨손 숫자는 무시", () => {
+    expect(press("1", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "todo" });
+    expect(press("2", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "in_progress" });
+    expect(press("3", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "done" });
+    expect(press("4", {}, { metaKey: true })).toEqual({ type: "SetFilter" });
+    expect(press("1", {}, { ctrlKey: true })).toEqual({ type: "SetFilter", status: "todo" });
+    expect(press("1")).toBeNull();
+    expect(press("4")).toBeNull();
+  });
+
+  it("탭 전환 [ / ] 는 전역(mail 스코프에서도)", () => {
+    expect(press("[")).toEqual({ type: "SwitchTab", direction: "prev" });
+    expect(press("]")).toEqual({ type: "SwitchTab", direction: "next" });
+    const mail = { scopeStack: ["global", "mail"] as const };
+    expect(press("[", mail)).toEqual({ type: "SwitchTab", direction: "prev" });
+    expect(press("]", mail)).toEqual({ type: "SwitchTab", direction: "next" });
   });
 
   it("검색 / 되돌리기 / 팔레트 / 도움말", () => {

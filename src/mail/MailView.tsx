@@ -13,6 +13,8 @@ import { handleMailKey, type MailKeyAction } from "./keyboard-mail";
 
 interface MailViewProps {
   client: GmailClient;
+  // App 이 관리하는 ⌘ 눌림 상태. 폴더 칩에 개수 대신 힌트를 보일 때 쓴다.
+  metaHeld: boolean;
 }
 
 const FOLDERS: readonly [MailFolder, string, string][] = [
@@ -57,6 +59,12 @@ export const MailView: Component<MailViewProps> = (props) => {
   const [showSettings, setShowSettings] = createSignal(false);
   const [clientId, setClientId] = createSignal("");
   const [clientSecret, setClientSecret] = createSignal("");
+  // 폴더 칩에 보여줄 개수. 현재 계정 필터 기준, 검색과는 무관하다.
+  const [folderCounts, setFolderCounts] = createSignal<Record<MailFolder, number>>({
+    inbox: 0,
+    archive: 0,
+    all: 0,
+  });
 
   const prefetched = new Set<string>();
   let searchInput: HTMLInputElement | undefined;
@@ -85,9 +93,30 @@ export const MailView: Component<MailViewProps> = (props) => {
         setCursor(Math.max(0, next.length - 1));
       }
       prefetchAround();
+      void loadFolderCounts();
     } catch (reason) {
       if (request === listRequest) setError(messageFrom(reason));
     }
+  }
+
+  // 폴더별 개수. folder="all" 로 현재 계정의 전체를 받아 in_inbox 로 나눈다.
+  // 검색과는 독립이다(전체 기준). limit 은 넉넉히 잡아 캡에 걸리지 않게 한다.
+  async function loadFolderCounts(): Promise<void> {
+    try {
+      const all = await props.client.list({
+        folder: "all",
+        account_id: accountFilter(),
+        limit: 1000,
+      });
+      const inbox = all.filter((message) => message.in_inbox).length;
+      setFolderCounts({ inbox, archive: all.length - inbox, all: all.length });
+    } catch {
+      // 개수는 부가 정보다. 실패해도 목록을 막지 않는다.
+    }
+  }
+
+  function folderCount(folder: MailFolder): number {
+    return folderCounts()[folder];
   }
 
   async function reloadAccounts(): Promise<void> {
@@ -217,12 +246,14 @@ export const MailView: Component<MailViewProps> = (props) => {
   }
 
   function onKeyDown(event: KeyboardEvent): void {
-    // ⌘K/? 및 탭 전환 등은 App 전역 핸들러 몫이다.
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // Alt 조합과 ⌘K/?·탭 전환은 App 전역 핸들러 몫이다. 폴더 전환(⌘1/2/3)만
+    // 여기서 처리하고, 나머지 ⌘/Ctrl 조합은 handleMailKey 가 null 을 내 전역으로 흘린다.
+    if (event.altKey) return;
     // 팔레트·도움말 오버레이가 떠 있으면 App 이 처리한다.
     if (document.querySelector(".overlay-backdrop") !== null) return;
     const focus = isTextTarget(event.target) ? "text" : "other";
-    const action = handleMailKey({ focus, detailOpen: openId() !== null }, event.key);
+    const meta = event.metaKey || event.ctrlKey;
+    const action = handleMailKey({ focus, detailOpen: openId() !== null, meta }, event.key);
     if (action !== null) {
       event.preventDefault();
       runMailAction(action);
@@ -299,7 +330,9 @@ export const MailView: Component<MailViewProps> = (props) => {
                 onClick={() => changeFolder(value)}
               >
                 {label}
-                <kbd>{key}</kbd>
+                <Show when={props.metaHeld} fallback={<span class="chip-count">{folderCount(value)}</span>}>
+                  <kbd>⌘{key}</kbd>
+                </Show>
               </button>
             )}
           </For>
@@ -457,11 +490,15 @@ export const MailView: Component<MailViewProps> = (props) => {
                     void openCurrent();
                   }}
                 >
-                  <span class="mail-from">{item.from_name || item.from_email}</span>
-                  <span class="mail-subject">{item.subject || "(제목 없음)"}</span>
-                  <span class="mail-snippet">{item.snippet}</span>
-                  <span class="mail-account-tag">{accountLabel(item.account_email)}</span>
-                  <time class="mail-date">{formatDate(item.internal_date)}</time>
+                  <div class="mail-row-line mail-row-top">
+                    <span class="mail-subject">{item.subject || "(제목 없음)"}</span>
+                    <time class="mail-date">{formatDate(item.internal_date)}</time>
+                  </div>
+                  <div class="mail-row-line mail-row-bottom">
+                    <span class="mail-from">{item.from_name || item.from_email}</span>
+                    <span class="mail-snippet">{item.snippet}</span>
+                    <span class="mail-account-tag">{accountLabel(item.account_email)}</span>
+                  </div>
                 </button>
               )}
             </For>

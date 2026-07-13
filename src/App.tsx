@@ -119,6 +119,7 @@ const SHORTCUTS: readonly [string, string][] = [
   ["Enter / Esc", "상세 열기 / 닫기·취소·선택 해제"],
   ["c", "새 할 일. Shift+Enter로 연속 생성"],
   ["e", "제목 편집"],
+  ["E", "설명 편집 (⌘Enter 저장, Esc 취소)"],
   ["d / i", "완료 / 진행 중 토글"],
   ["s", "보류 토글 (복귀일 입력, 비우면 계속 보류)"],
   ["p u·h·m·l·n", "우선순위 지정"],
@@ -126,7 +127,8 @@ const SHORTCUTS: readonly [string, string][] = [
   ["x", "선택 토글"],
   ["Backspace", "삭제"],
   ["l / o", "Linear 이슈 연결 / 열기"],
-  ["1 / 2 / 3 / 4", "할 일 / 진행 중 / 완료 / 전체"],
+  ["⌘1 / ⌘2 / ⌘3 / ⌘4", "할 일 / 진행 중 / 완료 / 전체 필터"],
+  ["[ / ]", "이전 / 다음 탭"],
   ["g", "보류 레인 펼치기·접기"],
   ["/", "검색"],
   ["u", "되돌리기"],
@@ -165,6 +167,12 @@ export const App: Component<AppProps> = (props) => {
   const [theme, setTheme] = createSignal<ThemePreference>(readPreference(localStorage));
   const [linearStatus, setLinearStatus] = createSignal<LinearStatus | null>(null);
   const [deferredTodos, setDeferredTodos] = createSignal<Todo[]>([]);
+  // 필터 칩에 보여줄 상태별 개수. 보류는 별도 레인이라 여기 안 센다.
+  const [statusCounts, setStatusCounts] = createSignal<Record<"todo" | "in_progress" | "done", number>>({
+    todo: 0,
+    in_progress: 0,
+    done: 0,
+  });
   const [laneOpen, setLaneOpen] = createSignal(localStorage.getItem("todo.lane") === "open");
   // Command 을 누르고 있으면 필터 칩 힌트를 ⌘1 처럼 보여준다.
   const [metaHeld, setMetaHeld] = createSignal(false);
@@ -250,6 +258,7 @@ export const App: Component<AppProps> = (props) => {
       installTodos(next, preferredId);
       setError(null);
       void loadDeferred();
+      void loadCounts();
       return next;
     } catch (reason) {
       setError(messageFrom(reason));
@@ -257,6 +266,30 @@ export const App: Component<AppProps> = (props) => {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadCounts(): Promise<void> {
+    try {
+      const all = await props.client.list({});
+      const next = { todo: 0, in_progress: 0, done: 0 };
+      for (const todo of all) {
+        if (todo.status === "todo" || todo.status === "in_progress" || todo.status === "done") {
+          next[todo.status] += 1;
+        }
+      }
+      setStatusCounts(next);
+    } catch {
+      // 개수는 부가 정보다. 실패해도 본 목록을 막지 않는다.
+    }
+  }
+
+  function countFor(status?: Status): number {
+    const counts = statusCounts();
+    if (status === "todo" || status === "in_progress" || status === "done") {
+      return counts[status];
+    }
+    // 전체
+    return counts.todo + counts.in_progress + counts.done;
   }
 
   // 보류 레인은 별도 목록이다. 복귀일 빠른 순, 무기한(NULL)은 맨 뒤.
@@ -326,12 +359,9 @@ export const App: Component<AppProps> = (props) => {
         const created = await props.client.create({ title: value });
         undo.push([{ type: "Remove", id: created.id }]);
         setToast("할 일을 만들었습니다.");
-        setInputValue("");
-        if (!keepCreating) {
-          setInputMode("none");
-        }
         await load(filterForCurrentView(), created.id);
         if (keepCreating) {
+          setInputValue("");
           focusEditor();
         } else {
           // 만들자마자 상세를 열고 설명 편집으로 넘어간다.
@@ -643,6 +673,15 @@ export const App: Component<AppProps> = (props) => {
     void load({ status, q: searchQuery().trim() || undefined });
   }
 
+  // 탭은 gmail 이 붙어 있을 때만 둘이다. 없으면 [ / ] 는 아무것도 안 바꾼다.
+  function switchTab(direction: "prev" | "next"): void {
+    const tabs: Tab[] = props.gmailClient ? ["todo", "mail"] : ["todo"];
+    const currentIndex = tabs.indexOf(activeTab());
+    const delta = direction === "next" ? 1 : -1;
+    const nextIndex = (currentIndex + delta + tabs.length) % tabs.length;
+    setActiveTab(tabs[nextIndex] ?? "todo");
+  }
+
   async function execute(action: Action): Promise<void> {
     switch (action.type) {
       case "MoveCursor":
@@ -728,12 +767,14 @@ export const App: Component<AppProps> = (props) => {
             setError(messageFrom(reason));
           }
         } else {
-          setToast("연결된 Linear 이슈가 없습니다.");
         }
         break;
       }
       case "SetFilter":
         changeFilter(action.status);
+        break;
+      case "SwitchTab":
+        switchTab(action.direction);
         break;
       case "Undo":
         await applyUndo();
@@ -861,7 +902,12 @@ export const App: Component<AppProps> = (props) => {
       </nav>
 
       <Show when={activeTab() === "mail" ? props.gmailClient : undefined}>
-        {(client) => <MailView client={client()} />}
+        {(client) => (
+          <MailView
+            client={client()}
+            metaHeld={metaHeld()}
+          />
+        )}
       </Show>
 
       <Show when={activeTab() === "todo"}>
@@ -881,7 +927,10 @@ export const App: Component<AppProps> = (props) => {
                 aria-pressed={statusFilter() === status}
                 onClick={() => changeFilter(status)}
               >
-                {label}<kbd>{metaHeld() ? `⌘${key}` : key}</kbd>
+                {label}
+                <Show when={metaHeld()} fallback={<span class="chip-count">{countFor(status)}</span>}>
+                  <kbd>⌘{key}</kbd>
+                </Show>
               </button>
             )}
           </For>
@@ -1117,6 +1166,7 @@ export const App: Component<AppProps> = (props) => {
                   )}
                 </Show>
               </dl>
+              </div>
             </>
           )}
         </Show>
