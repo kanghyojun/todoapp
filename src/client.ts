@@ -1,4 +1,6 @@
 import type {
+  EmailLinkRequest,
+  EmailRef,
   Filter,
   LinearRef,
   LinearStatus,
@@ -20,6 +22,7 @@ export interface TodoClient {
   restore(id: string): Promise<Todo>;
   defer(id: string, until: string): Promise<Todo>;
   linkLinear(id: string, issueRef: string): Promise<void>;
+  createFromEmail(input: EmailLinkRequest): Promise<Todo>;
   pullLinear(): Promise<PullResult>;
   linearStatus(): Promise<LinearStatus>;
   setLinearKey(apiKey: string): Promise<void>;
@@ -103,7 +106,8 @@ function decodeTodo(value: unknown): Todo {
     typeof value.updated_at !== "string" ||
     !isNullableString(value.deleted_at) ||
     !isNullableString(value.deferred_until) ||
-    !isValidLinear(value.linear)
+    !isValidLinear(value.linear) ||
+    !isValidEmail(value.email)
   ) {
     throw new ApiError("server returned an invalid todo", "invalid_response", 0);
   }
@@ -120,6 +124,7 @@ function decodeTodo(value: unknown): Todo {
     deleted_at: value.deleted_at,
     deferred_until: value.deferred_until,
     linear: decodeLinear(value.linear),
+    email: decodeEmail(value.email),
   };
 }
 
@@ -138,6 +143,33 @@ function isValidLinear(value: unknown): boolean {
 function decodeLinear(value: unknown): LinearRef | null {
   if (isRecord(value) && typeof value.identifier === "string" && typeof value.url === "string") {
     return { identifier: value.identifier, url: value.url };
+  }
+  return null;
+}
+
+function isValidEmail(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  return (
+    isRecord(value) &&
+    typeof value.account_id === "string" &&
+    typeof value.gmail_id === "string"
+  );
+}
+
+function decodeEmail(value: unknown): EmailRef | null {
+  if (
+    isRecord(value) &&
+    typeof value.account_id === "string" &&
+    typeof value.gmail_id === "string"
+  ) {
+    return {
+      account_id: value.account_id,
+      gmail_id: value.gmail_id,
+      thread_id: typeof value.thread_id === "string" ? value.thread_id : "",
+      subject: typeof value.subject === "string" ? value.subject : "",
+      from_name: typeof value.from_name === "string" ? value.from_name : "",
+      from_email: typeof value.from_email === "string" ? value.from_email : "",
+    };
   }
   return null;
 }
@@ -301,6 +333,14 @@ export class HttpClient implements TodoClient {
     });
   }
 
+  async createFromEmail(): Promise<Todo> {
+    throw new ApiError(
+      "이메일에서 할 일 만들기는 데스크톱 앱에서만 지원합니다.",
+      "unsupported",
+      0,
+    );
+  }
+
   async pullLinear(): Promise<PullResult> {
     return decodePullResult(
       await this.request("/linear/pull", { method: "POST" }),
@@ -401,6 +441,10 @@ export class TauriClient implements TodoClient {
 
   async linkLinear(id: string, issueRef: string): Promise<void> {
     await this.request("link_linear", { id, issueRef });
+  }
+
+  async createFromEmail(input: EmailLinkRequest): Promise<Todo> {
+    return decodeTodo(await this.request("create_todo_from_email", { input }));
   }
 
   async pullLinear(): Promise<PullResult> {

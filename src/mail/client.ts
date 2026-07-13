@@ -101,7 +101,8 @@ export function decodeMailListItem(value: unknown): MailListItem {
     typeof value.snippet !== "string" ||
     typeof value.internal_date !== "number" ||
     typeof value.in_inbox !== "boolean" ||
-    typeof value.is_unread !== "boolean"
+    typeof value.is_unread !== "boolean" ||
+    typeof value.has_todo !== "boolean"
   ) {
     throw new GmailClientError(
       "server returned an invalid mail item",
@@ -121,6 +122,7 @@ export function decodeMailListItem(value: unknown): MailListItem {
     internal_date: value.internal_date,
     in_inbox: value.in_inbox,
     is_unread: value.is_unread,
+    has_todo: value.has_todo,
   };
 }
 

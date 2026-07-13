@@ -6,6 +6,8 @@ export type MailKeyAction =
   | { type: "Close" }
   | { type: "Archive" }
   | { type: "ToggleRead" }
+  | { type: "CreateTodo" }
+  | { type: "CycleAccount" }
   | { type: "SetFolder"; folder: MailFolder }
   | { type: "OpenSearch" };
 
@@ -53,6 +55,10 @@ export function handleMailKey(
       return { type: "Archive" };
     case "u":
       return { type: "ToggleRead" };
+    case "t":
+      return { type: "CreateTodo" };
+    case "a":
+      return { type: "CycleAccount" };
     case "/":
       return { type: "OpenSearch" };
     default:

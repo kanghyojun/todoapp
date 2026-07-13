@@ -15,6 +15,7 @@ describe("decodeMailListItem", () => {
     internal_date: 123,
     in_inbox: true,
     is_unread: false,
+    has_todo: false,
   };
 
   it("정상 페이로드를 파싱한다", () => {
@@ -22,6 +23,7 @@ describe("decodeMailListItem", () => {
     expect(item.gmail_id).toBe("m1");
     expect(item.in_inbox).toBe(true);
     expect(item.internal_date).toBe(123);
+    expect(item.has_todo).toBe(false);
   });
 
   it("필드 누락 시 던진다", () => {

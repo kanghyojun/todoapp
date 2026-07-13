@@ -1,6 +1,7 @@
 import {
   For,
   Show,
+  createEffect,
   createMemo,
   createSignal,
   onCleanup,
@@ -8,9 +9,10 @@ import {
   type Component,
 } from "solid-js";
 import type { TodoClient } from "./client";
-import type { Filter, LinearStatus, Priority, Status, Todo } from "./domain";
-import { MailView } from "./mail/MailView";
+import type { EmailRef, Filter, LinearStatus, Priority, Status, Todo } from "./domain";
+import { MailView, type MailOpenRequest } from "./mail/MailView";
 import type { GmailClient } from "./mail/client";
+import type { MailListItem } from "./mail/domain";
 import {
   handleKey,
   type Action,
@@ -177,12 +179,16 @@ export const App: Component<AppProps> = (props) => {
   // Command 을 누르고 있으면 필터 칩 힌트를 ⌘1 처럼 보여준다.
   const [metaHeld, setMetaHeld] = createSignal(false);
   const [activeTab, setActiveTab] = createSignal<Tab>("todo");
+  const [mailOpenRequest, setMailOpenRequest] = createSignal<MailOpenRequest | undefined>();
+  // 메일 상세가 열려 있으면 할 일 상세를 그 폭만큼 왼쪽으로 밀어 나란히 세운다.
+  const [mailDetailOpen, setMailDetailOpen] = createSignal(false);
   const undo = new UndoStack();
   const rowElements = new Map<string, HTMLButtonElement>();
   let editorInput: HTMLInputElement | undefined;
   let descEditor: HTMLTextAreaElement | undefined;
   let paletteInput: HTMLInputElement | undefined;
   let paletteRequest = 0;
+  let mailOpenNonce = 0;
 
   const currentTodo = createMemo(() => todos()[cursorIndex()]);
   const detailTodo = createMemo(() => {
@@ -268,6 +274,40 @@ export const App: Component<AppProps> = (props) => {
     }
   }
 
+  async function createTodoFromEmail(item: MailListItem): Promise<void> {
+    try {
+      await props.client.createFromEmail({
+        title: item.subject || "(제목 없음)",
+        account_id: item.account_id,
+        gmail_id: item.gmail_id,
+        thread_id: item.thread_id,
+        subject: item.subject,
+        from_name: item.from_name,
+        from_email: item.from_email,
+      });
+      setToast("할 일을 만들었습니다.");
+      setError(null);
+      void load();
+    } catch (reason) {
+      setError(messageFrom(reason));
+    }
+  }
+
+  function openLinkedEmail(email: EmailRef): void {
+    mailOpenNonce += 1;
+    setActiveTab("mail");
+    setMailOpenRequest({
+      accountId: email.account_id,
+      gmailId: email.gmail_id,
+      subject: email.subject,
+      fromName: email.from_name,
+      fromEmail: email.from_email,
+      nonce: mailOpenNonce,
+    });
+  }
+
+  // 필터 칩 개수. 전체(status 미지정)는 서버에서 보류를 빼므로
+  // 한 번 훑어 상태별로 세면 '전체'는 세 개의 합이 된다.
   async function loadCounts(): Promise<void> {
     try {
       const all = await props.client.list({});
@@ -766,7 +806,10 @@ export const App: Component<AppProps> = (props) => {
           } catch (reason) {
             setError(messageFrom(reason));
           }
+        } else if (linked?.email) {
+          openLinkedEmail(linked.email);
         } else {
+          setToast("연결된 항목이 없습니다.");
         }
         break;
       }
@@ -846,6 +889,12 @@ export const App: Component<AppProps> = (props) => {
     setMetaHeld(false);
   }
 
+  // 메일 탭을 벗어나면 한 번 쓴 열기 요청을 비운다. 안 그러면 MailView 가
+  // 탭 전환 때마다 remount 되면서 낡은 요청으로 옛 메일을 다시 열어버린다.
+  createEffect(() => {
+    if (activeTab() !== "mail") setMailOpenRequest(undefined);
+  });
+
   onMount(() => {
     void load();
     void refreshLinearStatus();
@@ -906,6 +955,9 @@ export const App: Component<AppProps> = (props) => {
           <MailView
             client={client()}
             metaHeld={metaHeld()}
+            onCreateTodo={createTodoFromEmail}
+            openRequest={mailOpenRequest()}
+            onDetailOpenChange={setMailDetailOpen}
           />
         )}
       </Show>
@@ -1107,7 +1159,7 @@ export const App: Component<AppProps> = (props) => {
 
       <aside
         class="detail-panel"
-        classList={{ open: detailTodo() !== undefined }}
+        classList={{ open: detailTodo() !== undefined, shifted: mailDetailOpen() }}
         aria-hidden={detailTodo() === undefined}
         aria-labelledby="detail-heading"
       >
@@ -1161,6 +1213,25 @@ export const App: Component<AppProps> = (props) => {
                           {linear().identifier}
                         </button>
                         <span class="row-help"> · o로 열기</span>
+                      </dd>
+                    </div>
+                  )}
+                </Show>
+                <Show when={todo().email}>
+                  {(email) => (
+                    <div>
+                      <dt>이메일</dt>
+                      <dd>
+                        <button
+                          type="button"
+                          class="email-link"
+                          onClick={() => openLinkedEmail(email())}
+                        >
+                          {email().subject || "(제목 없음)"}
+                        </button>
+                        <span class="row-help">
+                          {" · "}{email().from_name || email().from_email}
+                        </span>
                       </dd>
                     </div>
                   )}

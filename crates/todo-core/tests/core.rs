@@ -2,8 +2,8 @@ use chrono::{DateTime, Local};
 use sqlx::Row;
 use tempfile::NamedTempFile;
 use todo_core::{
-    CreateTodoInput, DomainEvent, Error, LinearLinkInput, LinearRef, Priority, Status, TodoCore,
-    TodoFilter, TodoPatch,
+    CreateTodoInput, DomainEvent, EmailLinkInput, EmailRef, Error, LinearLinkInput, LinearRef,
+    Priority, Status, TodoCore, TodoFilter, TodoPatch,
 };
 
 async fn test_core() -> (NamedTempFile, TodoCore) {
@@ -933,10 +933,7 @@ async fn reads_carry_the_linear_link_when_present() {
     );
 
     // 링크 없는 todo 는 None 이다.
-    assert_eq!(
-        core.get_todo(bare.id).await.expect("get bare").linear,
-        None,
-    );
+    assert_eq!(core.get_todo(bare.id).await.expect("get bare").linear, None,);
 
     // 목록 읽기도 같은 정보를 실어 온다.
     let listed = core
@@ -947,12 +944,90 @@ async fn reads_carry_the_linear_link_when_present() {
         .iter()
         .find(|todo| todo.id == linked.id)
         .expect("linked todo in list");
-    assert_eq!(linked_in_list.linear.as_ref().map(|link| &link.identifier), Some(&"PI-1234".to_owned()));
+    assert_eq!(
+        linked_in_list.linear.as_ref().map(|link| &link.identifier),
+        Some(&"PI-1234".to_owned())
+    );
     let bare_in_list = listed
         .iter()
         .find(|todo| todo.id == bare.id)
         .expect("bare todo in list");
     assert_eq!(bare_in_list.linear, None);
+}
+
+#[tokio::test]
+async fn create_todo_from_email_persists_and_reads_the_email_snapshot() {
+    let (_database, core) = test_core().await;
+    let created = core
+        .create_todo_from_email(
+            "메일 답장하기".to_owned(),
+            EmailLinkInput {
+                account_id: "account-1".to_owned(),
+                gmail_id: "message-1".to_owned(),
+                thread_id: "thread-1".to_owned(),
+                subject: "회의 일정".to_owned(),
+                from_name: "Kim".to_owned(),
+                from_email: "kim@example.com".to_owned(),
+            },
+        )
+        .await
+        .expect("create todo from email");
+
+    let expected = EmailRef {
+        account_id: "account-1".to_owned(),
+        gmail_id: "message-1".to_owned(),
+        thread_id: "thread-1".to_owned(),
+        subject: "회의 일정".to_owned(),
+        from_name: "Kim".to_owned(),
+        from_email: "kim@example.com".to_owned(),
+    };
+    assert_eq!(created.title, "메일 답장하기");
+    assert_eq!(created.email, Some(expected.clone()));
+
+    let fetched = core.get_todo(created.id).await.expect("get linked todo");
+    assert_eq!(fetched.email, Some(expected.clone()));
+
+    let listed = core
+        .list_todos(TodoFilter::default())
+        .await
+        .expect("list todos");
+    assert_eq!(
+        listed
+            .iter()
+            .find(|todo| todo.id == created.id)
+            .and_then(|todo| todo.email.clone()),
+        Some(expected),
+    );
+
+    let duplicate_source = core
+        .create_todo_from_email(
+            "같은 메일의 두 번째 할 일".to_owned(),
+            EmailLinkInput {
+                account_id: "account-1".to_owned(),
+                gmail_id: "message-1".to_owned(),
+                thread_id: "thread-1".to_owned(),
+                subject: "회의 일정".to_owned(),
+                from_name: "Kim".to_owned(),
+                from_email: "kim@example.com".to_owned(),
+            },
+        )
+        .await
+        .expect("allow another todo from the same email");
+    assert_ne!(created.id, duplicate_source.id);
+    assert_eq!(
+        duplicate_source.email.as_ref().map(|email| &email.gmail_id),
+        Some(&"message-1".to_owned())
+    );
+
+    let bare = core
+        .create_todo(CreateTodoInput::new("일반 할 일"))
+        .await
+        .expect("create bare todo");
+    assert_eq!(bare.email, None);
+    assert_eq!(
+        core.get_todo(bare.id).await.expect("get bare todo").email,
+        None,
+    );
 }
 
 fn list_ids(todos: &[todo_core::Todo]) -> Vec<todo_core::TodoId> {
@@ -962,8 +1037,14 @@ fn list_ids(todos: &[todo_core::Todo]) -> Vec<todo_core::TodoId> {
 #[tokio::test]
 async fn defer_hides_from_normal_list_but_shows_in_deferred_filter() {
     let (_database, core) = test_core().await;
-    let a = core.create_todo(CreateTodoInput::new("a")).await.expect("a");
-    let b = core.create_todo(CreateTodoInput::new("b")).await.expect("b");
+    let a = core
+        .create_todo(CreateTodoInput::new("a"))
+        .await
+        .expect("a");
+    let b = core
+        .create_todo(CreateTodoInput::new("b"))
+        .await
+        .expect("b");
 
     let future = Local::now().date_naive() + chrono::Duration::days(7);
     let future_str = future.format("%Y-%m-%d").to_string();
@@ -972,7 +1053,10 @@ async fn defer_hides_from_normal_list_but_shows_in_deferred_filter() {
     assert_eq!(deferred.deferred_until, Some(future_str));
 
     // 전체 목록은 보류를 뺀다.
-    let all = core.list_todos(TodoFilter::default()).await.expect("list all");
+    let all = core
+        .list_todos(TodoFilter::default())
+        .await
+        .expect("list all");
     assert_eq!(list_ids(&all), vec![b.id]);
 
     // 보류 필터는 보류만 준다.
@@ -989,7 +1073,10 @@ async fn defer_hides_from_normal_list_but_shows_in_deferred_filter() {
 #[tokio::test]
 async fn a_past_return_date_wakes_the_todo_on_read() {
     let (_database, core) = test_core().await;
-    let todo = core.create_todo(CreateTodoInput::new("wake me")).await.expect("create");
+    let todo = core
+        .create_todo(CreateTodoInput::new("wake me"))
+        .await
+        .expect("create");
     let past = Local::now().date_naive() - chrono::Duration::days(1);
     core.defer_todo(todo.id, &past.format("%Y-%m-%d").to_string())
         .await
@@ -1006,7 +1093,10 @@ async fn a_past_return_date_wakes_the_todo_on_read() {
 #[tokio::test]
 async fn an_indefinite_defer_never_wakes() {
     let (_database, core) = test_core().await;
-    let todo = core.create_todo(CreateTodoInput::new("sleep forever")).await.expect("create");
+    let todo = core
+        .create_todo(CreateTodoInput::new("sleep forever"))
+        .await
+        .expect("create");
     core.defer_todo(todo.id, "").await.expect("defer forever");
 
     let all = core.list_todos(TodoFilter::default()).await.expect("list");
@@ -1019,9 +1109,16 @@ async fn an_indefinite_defer_never_wakes() {
 #[tokio::test]
 async fn leaving_deferred_clears_the_return_date_and_pushes_linked_done() {
     let (_database, core) = test_core().await;
-    let todo = core.create_todo(CreateTodoInput::new("deferred then done")).await.expect("create");
-    core.link_linear(todo.id, linear_link("defer-done-issue")).await.expect("link");
-    let future = (Local::now().date_naive() + chrono::Duration::days(30)).format("%Y-%m-%d").to_string();
+    let todo = core
+        .create_todo(CreateTodoInput::new("deferred then done"))
+        .await
+        .expect("create");
+    core.link_linear(todo.id, linear_link("defer-done-issue"))
+        .await
+        .expect("link");
+    let future = (Local::now().date_naive() + chrono::Duration::days(30))
+        .format("%Y-%m-%d")
+        .to_string();
     core.defer_todo(todo.id, &future).await.expect("defer");
 
     // 보류 항목을 done 으로 걸면: done 되고 복귀일이 지워지고 Linear 로 밀린다.
@@ -1040,8 +1137,13 @@ async fn leaving_deferred_clears_the_return_date_and_pushes_linked_done() {
 #[tokio::test]
 async fn deferring_a_linked_todo_never_enqueues_outbox() {
     let (_database, core) = test_core().await;
-    let todo = core.create_todo(CreateTodoInput::new("linked deferred")).await.expect("create");
-    core.link_linear(todo.id, linear_link("defer-only-issue")).await.expect("link");
+    let todo = core
+        .create_todo(CreateTodoInput::new("linked deferred"))
+        .await
+        .expect("create");
+    core.link_linear(todo.id, linear_link("defer-only-issue"))
+        .await
+        .expect("link");
     core.defer_todo(todo.id, "").await.expect("defer");
 
     let outbox = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sync_outbox")

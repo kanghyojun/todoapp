@@ -11,16 +11,14 @@ use chrono::{Local, NaiveDate};
 use serde::{Deserialize, Deserializer, Serialize};
 use tauri::{Emitter, Manager, State};
 use todo_core::{
-    CreateTodoInput, DomainEvent, Error as CoreError, Priority, Status, Todo, TodoCore, TodoFilter,
-    TodoId, TodoPatch, parse_due_date,
+    CreateTodoInput, DomainEvent, EmailLinkInput, Error as CoreError, Priority, Status, Todo,
+    TodoCore, TodoFilter, TodoId, TodoPatch, parse_due_date,
 };
 use todo_gmail::{
-    Error as GmailError, GmailAccount, GmailService, MailBody, MailFilter, MailFolder, MailListItem,
-    SystemTokenStore,
+    Error as GmailError, GmailAccount, GmailService, MailBody, MailFilter, MailFolder,
+    MailListItem, SystemTokenStore,
 };
-use todo_linear::{
-    Error as LinearError, LinearService, LinearStatus, PullSummary, SystemKeyStore,
-};
+use todo_linear::{Error as LinearError, LinearService, LinearStatus, PullSummary, SystemKeyStore};
 use todo_server::{
     ServerConfig, StartupError, bind, build_router_with_linear, default_token_path,
     load_or_create_token, serve,
@@ -348,6 +346,43 @@ async fn link_linear(
     Ok(state.linear.link(parse_todo_id(&id)?, &issue_ref).await?)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateFromEmailRequest {
+    title: String,
+    account_id: String,
+    gmail_id: String,
+    thread_id: String,
+    subject: String,
+    from_name: String,
+    from_email: String,
+}
+
+#[tauri::command]
+async fn create_todo_from_email(
+    input: CreateFromEmailRequest,
+    state: State<'_, ShellState>,
+) -> Result<Todo, CommandError> {
+    let CreateFromEmailRequest {
+        title,
+        account_id,
+        gmail_id,
+        thread_id,
+        subject,
+        from_name,
+        from_email,
+    } = input;
+    let email = EmailLinkInput {
+        account_id,
+        gmail_id,
+        thread_id,
+        subject,
+        from_name,
+        from_email,
+    };
+    Ok(state.core.create_todo_from_email(title, email).await?)
+}
+
 #[tauri::command]
 async fn defer(
     id: String,
@@ -368,10 +403,7 @@ async fn linear_status(state: State<'_, ShellState>) -> Result<LinearStatus, Com
 }
 
 #[tauri::command]
-async fn set_linear_key(
-    api_key: String,
-    state: State<'_, ShellState>,
-) -> Result<(), CommandError> {
+async fn set_linear_key(api_key: String, state: State<'_, ShellState>) -> Result<(), CommandError> {
     Ok(state.linear.set_api_key(&api_key).await?)
 }
 
@@ -420,9 +452,7 @@ impl GmailListRequest {
 }
 
 #[tauri::command]
-async fn gmail_accounts(
-    state: State<'_, ShellState>,
-) -> Result<Vec<GmailAccount>, CommandError> {
+async fn gmail_accounts(state: State<'_, ShellState>) -> Result<Vec<GmailAccount>, CommandError> {
     Ok(state.gmail.accounts().await?)
 }
 
@@ -509,9 +539,10 @@ async fn gmail_add_account(state: State<'_, ShellState>) -> Result<GmailAccount,
     open::that(&auth_url).map_err(CommandError::internal)?;
 
     let state_for_wait = expected_state.clone();
-    let code = tauri::async_runtime::spawn_blocking(move || wait_for_code(&listener, &state_for_wait))
-        .await
-        .map_err(CommandError::internal)??;
+    let code =
+        tauri::async_runtime::spawn_blocking(move || wait_for_code(&listener, &state_for_wait))
+            .await
+            .map_err(CommandError::internal)??;
 
     let account = gmail.complete_auth(&code, &verifier, &redirect_uri).await?;
 
@@ -724,6 +755,7 @@ pub fn run() {
             restore,
             defer,
             link_linear,
+            create_todo_from_email,
             pull_linear,
             linear_status,
             set_linear_key,

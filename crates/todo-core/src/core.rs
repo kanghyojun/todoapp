@@ -8,8 +8,8 @@ use sqlx::{
 use tokio::sync::broadcast;
 
 use crate::{
-    CreateTodoInput, DomainEvent, Error, LinearLinkInput, LinearRef, Priority, Result, Status,
-    Todo, TodoFilter, TodoId, TodoPatch, parse_due_date,
+    CreateTodoInput, DomainEvent, EmailLinkInput, EmailRef, Error, LinearLinkInput, LinearRef,
+    Priority, Result, Status, Todo, TodoFilter, TodoId, TodoPatch, parse_due_date,
 };
 
 #[derive(Clone)]
@@ -88,8 +88,12 @@ impl TodoCore {
             "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
                     t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
                     t.deferred_until, \
-                    li.identifier AS linear_identifier, li.url AS linear_url \
+                    li.identifier AS linear_identifier, li.url AS linear_url, \
+                    em.account_id AS email_account_id, em.gmail_id AS email_gmail_id, \
+                    em.thread_id AS email_thread_id, em.subject AS email_subject, \
+                    em.from_name AS email_from_name, em.from_email AS email_from_email \
              FROM todos AS t LEFT JOIN linear_links AS li ON li.todo_id = t.id \
+             LEFT JOIN email_links AS em ON em.todo_id = t.id \
              WHERE t.id = ? AND t.deleted_at IS NULL",
         )
         .bind(id.to_string())
@@ -125,9 +129,13 @@ impl TodoCore {
                 "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
                  t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
                  t.deferred_until, \
-                 li.identifier AS linear_identifier, li.url AS linear_url \
+                 li.identifier AS linear_identifier, li.url AS linear_url, \
+                 em.account_id AS email_account_id, em.gmail_id AS email_gmail_id, \
+                 em.thread_id AS email_thread_id, em.subject AS email_subject, \
+                 em.from_name AS email_from_name, em.from_email AS email_from_email \
                  FROM todos_fts JOIN todos AS t ON t.rowid = todos_fts.rowid \
                  LEFT JOIN linear_links AS li ON li.todo_id = t.id \
+                 LEFT JOIN email_links AS em ON em.todo_id = t.id \
                  WHERE todos_fts MATCH ",
             );
             query
@@ -139,8 +147,12 @@ impl TodoCore {
                 "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
                  t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
                  t.deferred_until, \
-                 li.identifier AS linear_identifier, li.url AS linear_url \
+                 li.identifier AS linear_identifier, li.url AS linear_url, \
+                 em.account_id AS email_account_id, em.gmail_id AS email_gmail_id, \
+                 em.thread_id AS email_thread_id, em.subject AS email_subject, \
+                 em.from_name AS email_from_name, em.from_email AS email_from_email \
                  FROM todos AS t LEFT JOIN linear_links AS li ON li.todo_id = t.id \
+                 LEFT JOIN email_links AS em ON em.todo_id = t.id \
                  WHERE t.deleted_at IS NULL",
             )
         };
@@ -425,6 +437,48 @@ impl TodoCore {
         Ok(())
     }
 
+    pub async fn create_todo_from_email(
+        &self,
+        title: String,
+        email: EmailLinkInput,
+    ) -> Result<Todo> {
+        let title = normalize_title(title)?;
+        let id = TodoId::new();
+        let now = now_string();
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO todos \
+             (id, title, description, status, priority, due_date, completed_at, created_at, updated_at) \
+             VALUES (?, ?, '', 'todo', 0, NULL, NULL, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(title)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO email_links \
+             (todo_id, account_id, gmail_id, thread_id, subject, from_name, from_email, linked_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(email.account_id)
+        .bind(email.gmail_id)
+        .bind(email.thread_id)
+        .bind(email.subject)
+        .bind(email.from_name)
+        .bind(email.from_email)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        let row = fetch_todo_row(id, &mut transaction).await?;
+        let todo: Todo = row.try_into()?;
+        transaction.commit().await?;
+        self.emit(DomainEvent::TodoCreated(id));
+        Ok(todo)
+    }
+
     async fn set_deleted_at(&self, id: TodoId, deleted_at: Option<String>) -> Result<()> {
         let mut transaction = self.pool.begin().await?;
         let result = sqlx::query("UPDATE todos SET deleted_at = ?, updated_at = ? WHERE id = ?")
@@ -498,8 +552,12 @@ async fn fetch_todo_row(
         "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
                 t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
                 t.deferred_until, \
-                li.identifier AS linear_identifier, li.url AS linear_url \
+                li.identifier AS linear_identifier, li.url AS linear_url, \
+                em.account_id AS email_account_id, em.gmail_id AS email_gmail_id, \
+                em.thread_id AS email_thread_id, em.subject AS email_subject, \
+                em.from_name AS email_from_name, em.from_email AS email_from_email \
          FROM todos AS t LEFT JOIN linear_links AS li ON li.todo_id = t.id \
+         LEFT JOIN email_links AS em ON em.todo_id = t.id \
          WHERE t.id = ? AND t.deleted_at IS NULL",
     )
     .bind(id.to_string())
@@ -526,6 +584,18 @@ struct TodoRow {
     linear_identifier: Option<String>,
     #[sqlx(default)]
     linear_url: Option<String>,
+    #[sqlx(default)]
+    email_account_id: Option<String>,
+    #[sqlx(default)]
+    email_gmail_id: Option<String>,
+    #[sqlx(default)]
+    email_thread_id: Option<String>,
+    #[sqlx(default)]
+    email_subject: Option<String>,
+    #[sqlx(default)]
+    email_from_name: Option<String>,
+    #[sqlx(default)]
+    email_from_email: Option<String>,
 }
 
 impl TryFrom<TodoRow> for Todo {
@@ -550,6 +620,17 @@ impl TryFrom<TodoRow> for Todo {
             deferred_until: row.deferred_until,
             linear: match (row.linear_identifier, row.linear_url) {
                 (Some(identifier), Some(url)) => Some(LinearRef { identifier, url }),
+                _ => None,
+            },
+            email: match (row.email_account_id, row.email_gmail_id) {
+                (Some(account_id), Some(gmail_id)) => Some(EmailRef {
+                    account_id,
+                    gmail_id,
+                    thread_id: row.email_thread_id.unwrap_or_default(),
+                    subject: row.email_subject.unwrap_or_default(),
+                    from_name: row.email_from_name.unwrap_or_default(),
+                    from_email: row.email_from_email.unwrap_or_default(),
+                }),
                 _ => None,
             },
         })

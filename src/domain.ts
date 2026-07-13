@@ -7,6 +7,15 @@ export interface LinearRef {
   url: string;
 }
 
+export interface EmailRef {
+  account_id: string;
+  gmail_id: string;
+  thread_id: string;
+  subject: string;
+  from_name: string;
+  from_email: string;
+}
+
 export interface LinearStatus {
   configured: boolean;
   keyStoreAvailable: boolean;
@@ -26,6 +35,7 @@ export interface Todo {
   deleted_at: string | null;
   deferred_until: string | null;
   linear: LinearRef | null;
+  email: EmailRef | null;
 }
 
 export interface Filter {
@@ -51,6 +61,16 @@ export interface TodoPatch {
   status?: Status;
   priority?: Priority;
   due_date?: string | null;
+}
+
+export interface EmailLinkRequest {
+  title: string;
+  account_id: string;
+  gmail_id: string;
+  thread_id: string;
+  subject: string;
+  from_name: string;
+  from_email: string;
 }
 
 export interface PullResult {

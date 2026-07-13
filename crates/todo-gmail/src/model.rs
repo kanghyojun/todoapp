@@ -27,6 +27,7 @@ pub struct MailListItem {
     pub internal_date: i64,
     pub in_inbox: bool,
     pub is_unread: bool,
+    pub has_todo: bool,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

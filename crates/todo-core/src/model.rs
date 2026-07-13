@@ -121,6 +121,8 @@ pub struct Todo {
     pub deferred_until: Option<String>,
     /// 읽기 경로에서 조인해 채운다. 링크가 없으면 None.
     pub linear: Option<LinearRef>,
+    /// 읽기 경로에서 email_links 를 조인해 채운다. 링크가 없으면 None.
+    pub email: Option<EmailRef>,
 }
 
 /// todo 를 읽을 때 함께 실어 보내는 Linear 링크의 최소 정보.
@@ -129,6 +131,16 @@ pub struct Todo {
 pub struct LinearRef {
     pub identifier: String,
     pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmailRef {
+    pub account_id: String,
+    pub gmail_id: String,
+    pub thread_id: String,
+    pub subject: String,
+    pub from_name: String,
+    pub from_email: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +198,16 @@ pub struct LinearLinkInput {
     pub identifier: String,
     pub url: String,
     pub team_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailLinkInput {
+    pub account_id: String,
+    pub gmail_id: String,
+    pub thread_id: String,
+    pub subject: String,
+    pub from_name: String,
+    pub from_email: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

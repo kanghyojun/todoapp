@@ -21,6 +21,7 @@ export interface MailListItem {
   internal_date: number;
   in_inbox: boolean;
   is_unread: boolean;
+  has_todo: boolean;
 }
 
 export interface MailBody {

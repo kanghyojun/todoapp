@@ -275,6 +275,8 @@ button.todo-row { cursor: pointer; }
 
 .row-help { color: var(--muted); font-size: 10px; }
 
+.linear-link,
+.email-link {
   padding: 0;
   border: 0;
   background: transparent;
@@ -376,6 +378,28 @@ button.todo-row { cursor: pointer; }
   transform: translateX(100%);
   opacity: 0;
   pointer-events: none;
+  transition: transform 160ms ease-out, opacity 160ms ease-out, right 160ms ease-out;
+  /* 헤더·제목은 위에 고정하고 본문만 스크롤한다. */
+  display: flex;
+  flex-direction: column;
+}
+
+/* 메일 상세(800px)가 열리면 할 일 상세를 그 폭만큼 왼쪽으로 밀어
+   두 드로어가 겹치지 않고 오른쪽에 나란히 서게 한다. */
+.detail-panel.shifted {
+  right: min(800px, 100vw);
+}
+
+/* 헤더와 제목은 줄어들지 않는 고정 영역. */
+.detail-panel > .panel-header,
+.detail-panel > h1 { flex: 0 0 auto; }
+
+/* 설명·메타는 남은 높이를 채우고 넘치면 스크롤. min-height:0 이 없으면
+   flex 자식이 내용 높이만큼 커져 overflow 가 먹지 않는다. */
+.detail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .detail-panel.open {
@@ -719,6 +743,17 @@ dd { margin: 0; overflow-wrap: anywhere; }
   margin-left: auto;
   color: var(--muted);
   font-size: 0.75rem;
+}
+
+.mail-todo-tag {
+  flex-shrink: 0;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px;
+  padding: 1px 5px;
+  font-size: 0.65rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .mail-date {

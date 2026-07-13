@@ -15,6 +15,10 @@ describe("handleMailKey", () => {
     expect(handleMailKey(other, "e")).toEqual({ type: "Archive" }));
   it("u는 읽음 토글", () =>
     expect(handleMailKey(other, "u")).toEqual({ type: "ToggleRead" }));
+  it("t는 현재 메일로 할 일 만들기", () =>
+    expect(handleMailKey(other, "t")).toEqual({ type: "CreateTodo" }));
+  it("a는 계정 순환", () =>
+    expect(handleMailKey(other, "a")).toEqual({ type: "CycleAccount" }));
   it("⌘1/2/3은 폴더 전환", () => {
     expect(handleMailKey(meta, "1")).toEqual({ type: "SetFolder", folder: "inbox" });
     expect(handleMailKey(meta, "2")).toEqual({ type: "SetFolder", folder: "archive" });

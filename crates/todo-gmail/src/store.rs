@@ -257,7 +257,10 @@ pub(crate) async fn query_messages(
         "SELECT m.account_id AS account_id, a.email AS account_email, a.color AS account_color, \
          m.gmail_id AS gmail_id, m.thread_id AS thread_id, m.from_name AS from_name, \
          m.from_email AS from_email, m.subject AS subject, m.snippet AS snippet, \
-         m.internal_date AS internal_date, m.in_inbox AS in_inbox, m.is_unread AS is_unread \
+         m.internal_date AS internal_date, m.in_inbox AS in_inbox, m.is_unread AS is_unread, \
+         EXISTS (SELECT 1 FROM email_links el JOIN todos td ON td.id = el.todo_id \
+                 WHERE el.account_id = m.account_id AND el.gmail_id = m.gmail_id \
+                   AND td.deleted_at IS NULL) AS has_todo \
          FROM gmail_messages m JOIN gmail_accounts a ON a.id = m.account_id WHERE 1 = 1",
     );
     match filter.folder {
@@ -270,7 +273,9 @@ pub(crate) async fn query_messages(
         MailFolder::All => {}
     }
     if let Some(account_id) = &filter.account_id {
-        builder.push(" AND m.account_id = ").push_bind(account_id.clone());
+        builder
+            .push(" AND m.account_id = ")
+            .push_bind(account_id.clone());
     }
     if let Some(query) = filter.query.as_deref() {
         let like = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));

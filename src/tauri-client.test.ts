@@ -14,6 +14,7 @@ const TODO = {
   deleted_at: null,
   deferred_until: null,
   linear: null,
+  email: null,
 };
 
 describe("TauriClient", () => {
@@ -51,6 +52,42 @@ describe("TauriClient", () => {
       running: false,
       error: "2470 포트가 사용 중입니다",
     });
+  });
+
+  it("creates a todo from email through IPC and decodes its email link", async () => {
+    const input = {
+      title: "Reply to Kim",
+      account_id: "account-1",
+      gmail_id: "message-1",
+      thread_id: "thread-1",
+      subject: "Hello",
+      from_name: "Kim",
+      from_email: "kim@example.com",
+    };
+    const linkedTodo = {
+      ...TODO,
+      title: input.title,
+      email: {
+        account_id: input.account_id,
+        gmail_id: input.gmail_id,
+        thread_id: input.thread_id,
+        subject: input.subject,
+        from_name: input.from_name,
+        from_email: input.from_email,
+      },
+    };
+    const invoke = vi.fn<InvokeFn>(async () => linkedTodo);
+    const client = new TauriClient(invoke, vi.fn<ListenFn>());
+
+    await expect(client.createFromEmail(input)).resolves.toMatchObject({
+      title: "Reply to Kim",
+      email: {
+        account_id: "account-1",
+        gmail_id: "message-1",
+        subject: "Hello",
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith("create_todo_from_email", { input });
   });
 
   it("maps the Linear pull response exactly like HttpClient", async () => {

@@ -1,6 +1,7 @@
 import {
   For,
   Show,
+  createEffect,
   createMemo,
   createSignal,
   onCleanup,
@@ -11,10 +12,24 @@ import type { GmailClient } from "./client";
 import type { GmailAccount, MailBody, MailFolder, MailListItem } from "./domain";
 import { handleMailKey, type MailKeyAction } from "./keyboard-mail";
 
+export interface MailOpenRequest {
+  accountId: string;
+  gmailId: string;
+  subject: string;
+  fromName: string;
+  fromEmail: string;
+  nonce: number;
+}
+
 interface MailViewProps {
   client: GmailClient;
   // App 이 관리하는 ⌘ 눌림 상태. 폴더 칩에 개수 대신 힌트를 보일 때 쓴다.
   metaHeld: boolean;
+  onCreateTodo: (item: MailListItem) => Promise<void>;
+  openRequest?: MailOpenRequest;
+  // 메일 상세가 열렸는지 App 에 알린다. App 이 할 일 상세를 옆으로 밀어
+  // 두 드로어가 겹치지 않고 나란히 서게 한다.
+  onDetailOpenChange?: (open: boolean) => void;
 }
 
 const FOLDERS: readonly [MailFolder, string, string][] = [
@@ -52,6 +67,8 @@ export const MailView: Component<MailViewProps> = (props) => {
   const [cursor, setCursor] = createSignal(0);
   const [openId, setOpenId] = createSignal<string | null>(null);
   const [body, setBody] = createSignal<MailBody | null>(null);
+  const [injectedHeader, setInjectedHeader] =
+    createSignal<{ subject: string; from_name: string; from_email: string } | null>(null);
   const [search, setSearch] = createSignal("");
   const [searchMode, setSearchMode] = createSignal(false);
   const [syncing, setSyncing] = createSignal(false);
@@ -74,6 +91,19 @@ export const MailView: Component<MailViewProps> = (props) => {
   const openMessage = createMemo(() =>
     messages().find((message) => message.gmail_id === openId()),
   );
+  const detailHeader = createMemo(() => {
+    const message = openMessage();
+    if (message) {
+      return {
+        subject: message.subject,
+        from_name: message.from_name,
+        from_email: message.from_email,
+      };
+    }
+    const injected = injectedHeader();
+    if (openId() !== null && injected) return injected;
+    return undefined;
+  });
   const needsAuthAccounts = createMemo(() =>
     accounts().filter((account) => account.sync_state === "needs_auth"),
   );
@@ -143,6 +173,7 @@ export const MailView: Component<MailViewProps> = (props) => {
   async function openCurrent(): Promise<void> {
     const item = current();
     if (item === undefined) return;
+    setInjectedHeader(null);
     setOpenId(item.gmail_id);
     setBody(null);
     try {
@@ -154,6 +185,44 @@ export const MailView: Component<MailViewProps> = (props) => {
       setError(messageFrom(reason));
     }
   }
+
+  async function openFromRequest(request: MailOpenRequest): Promise<void> {
+    setInjectedHeader({
+      subject: request.subject,
+      from_name: request.fromName,
+      from_email: request.fromEmail,
+    });
+    setFolder("all");
+    setAccountFilter(undefined);
+    setSearch("");
+    setSearchMode(false);
+    setCursor(0);
+    await reload();
+    setOpenId(request.gmailId);
+    setBody(null);
+    const found = messages().find(
+      (message) =>
+        message.gmail_id === request.gmailId && message.account_id === request.accountId,
+    );
+    if (found?.is_unread) void markRead(found, true);
+    try {
+      setBody(await props.client.getBody(request.accountId, request.gmailId));
+    } catch {
+      setError("메일을 찾을 수 없습니다.");
+      setOpenId(null);
+    }
+  }
+
+  createEffect(() => {
+    const request = props.openRequest;
+    if (!request) return;
+    void openFromRequest(request);
+  });
+
+  // 메일 상세 열림/닫힘을 App 으로 흘려보낸다.
+  createEffect(() => {
+    props.onDetailOpenChange?.(detailHeader() !== undefined);
+  });
 
   async function markRead(item: MailListItem, read: boolean): Promise<void> {
     // 낙관적 로컬 반영.
@@ -236,6 +305,22 @@ export const MailView: Component<MailViewProps> = (props) => {
         if (item !== undefined) void markRead(item, item.is_unread);
         break;
       }
+      case "CreateTodo": {
+        const item = current();
+        if (item === undefined) return;
+        setMessages((list) =>
+          list.map((message) =>
+            message.gmail_id === item.gmail_id && message.account_id === item.account_id
+              ? { ...message, has_todo: true }
+              : message,
+          ),
+        );
+        void props.onCreateTodo(item).finally(() => void reload());
+        break;
+      }
+      case "CycleAccount":
+        cycleAccount();
+        break;
       case "SetFolder":
         changeFolder(action.folder);
         break;
@@ -243,6 +328,18 @@ export const MailView: Component<MailViewProps> = (props) => {
         beginSearch();
         break;
     }
+  }
+
+  // 계정 필터를 전체(undefined) → 계정1 → 계정2 → … → 전체 순으로 돌린다.
+  function cycleAccount(): void {
+    const ids: (string | undefined)[] = [undefined, ...accounts().map((account) => account.id)];
+    if (ids.length <= 1) return;
+    const index = ids.indexOf(accountFilter());
+    const next = ids[(index + 1) % ids.length];
+    setAccountFilter(next);
+    setCursor(0);
+    setOpenId(null);
+    void reload();
   }
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -313,6 +410,8 @@ export const MailView: Component<MailViewProps> = (props) => {
     onCleanup(() => {
       unsubscribe();
       window.removeEventListener("keydown", onKeyDown);
+      // 탭을 벗어나 MailView 가 사라지면 메일 상세도 닫힌 것이다.
+      props.onDetailOpenChange?.(false);
     });
   });
 
@@ -492,6 +591,9 @@ export const MailView: Component<MailViewProps> = (props) => {
                 >
                   <div class="mail-row-line mail-row-top">
                     <span class="mail-subject">{item.subject || "(제목 없음)"}</span>
+                    <Show when={item.has_todo}>
+                      <span class="mail-todo-tag">✓할일</span>
+                    </Show>
                     <time class="mail-date">{formatDate(item.internal_date)}</time>
                   </div>
                   <div class="mail-row-line mail-row-bottom">
@@ -508,10 +610,10 @@ export const MailView: Component<MailViewProps> = (props) => {
 
       <aside
         class="detail-panel mail-detail"
-        classList={{ open: openMessage() !== undefined }}
-        aria-hidden={openMessage() === undefined}
+        classList={{ open: detailHeader() !== undefined }}
+        aria-hidden={detailHeader() === undefined}
       >
-        <Show when={openMessage()}>
+        <Show when={detailHeader()}>
           {(item) => (
             <>
               <div class="panel-header">

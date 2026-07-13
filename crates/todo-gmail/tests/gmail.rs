@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use tempfile::NamedTempFile;
-use todo_core::TodoCore;
+use todo_core::{EmailLinkInput, TodoCore};
 use todo_gmail::{GmailService, MailFilter, MailFolder, TokenStore, TokenStoreError};
 use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -495,6 +495,60 @@ async fn list_filters_by_folder_account_and_query() {
         .unwrap();
     assert_eq!(matched.len(), 1);
     assert_eq!(matched[0].gmail_id, "m1");
+}
+
+#[tokio::test]
+async fn list_marks_messages_linked_to_active_todos() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "a@x.com")
+        .await
+        .unwrap();
+    seed_subject(&harness.core, &account.id, "m1", 1, "linked mail", 300).await;
+
+    let before = harness
+        .service
+        .list(filter(MailFolder::All, Some(&account.id), None))
+        .await
+        .unwrap();
+    assert_eq!(before.len(), 1);
+    assert!(!before[0].has_todo);
+
+    let todo = harness
+        .core
+        .create_todo_from_email(
+            "linked mail".to_owned(),
+            EmailLinkInput {
+                account_id: account.id.clone(),
+                gmail_id: "m1".to_owned(),
+                thread_id: "t1".to_owned(),
+                subject: "linked mail".to_owned(),
+                from_name: "Kim".to_owned(),
+                from_email: "kim@x.com".to_owned(),
+            },
+        )
+        .await
+        .expect("create todo from email");
+
+    let after = harness
+        .service
+        .list(filter(MailFolder::All, Some(&account.id), None))
+        .await
+        .unwrap();
+    assert_eq!(after.len(), 1);
+    assert!(after[0].has_todo);
+
+    harness
+        .core
+        .delete_todo(todo.id)
+        .await
+        .expect("delete todo");
+    let after_delete = harness
+        .service
+        .list(filter(MailFolder::All, Some(&account.id), None))
+        .await
+        .unwrap();
+    assert_eq!(after_delete.len(), 1);
+    assert!(!after_delete[0].has_todo);
 }
 
 async fn pending_outbox(core: &TodoCore) -> i64 {
