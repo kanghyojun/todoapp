@@ -464,6 +464,12 @@ async fn gmail_list(
     Ok(state.gmail.list(filter.into_core()?).await?)
 }
 
+/// 받은편지함 안읽음 개수. Mail 탭 뱃지가 이 값을 읽어 그린다.
+#[tauri::command]
+async fn gmail_unread_count(state: State<'_, ShellState>) -> Result<u64, CommandError> {
+    Ok(state.gmail.unread_count().await?)
+}
+
 #[tauri::command]
 async fn gmail_get_body(
     account_id: String,
@@ -650,7 +656,9 @@ async fn initialize(app: tauri::AppHandle) -> Result<ShellState, Box<dyn StdErro
     let gmail = GmailService::new(core.clone(), Arc::new(SystemTokenStore));
 
     forward_domain_events(app.clone(), core.subscribe());
-    forward_mail_events(app.clone(), gmail.subscribe());
+    forward_mail_events(app.clone(), gmail.clone(), gmail.subscribe());
+    // 창이 뜰 때 이미 안읽음이 있으면 첫 동기화를 기다리지 않고 바로 Dock 에 올린다.
+    refresh_dock_badge(&app, &gmail).await;
 
     // 아웃박스 워커는 서버와 무관하다. 포트가 막혀 REST/MCP 가 안 떠도
     // done 을 누르면 Linear 로 밀려야 한다.
@@ -715,18 +723,43 @@ fn forward_domain_events(
 
 fn forward_mail_events(
     app: tauri::AppHandle,
+    gmail: GmailService,
     mut events: tokio::sync::broadcast::Receiver<todo_gmail::MailEvent>,
 ) {
     tauri::async_runtime::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let _ = app.emit(MAIL_CHANGED_EVENT, ());
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
+        // Closed 면 끝난다. Lagged 는 이벤트를 놓쳤을 뿐이니 한 번 알리고 잇는다.
+        while let Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) =
+            events.recv().await
+        {
+            let _ = app.emit(MAIL_CHANGED_EVENT, ());
+            // 메일이 바뀔 때마다 Dock 카운트를 다시 맞춘다. 웹뷰와 무관하게
+            // 백엔드가 뱃지의 단일 출처다.
+            refresh_dock_badge(&app, &gmail).await;
         }
     });
+}
+
+/// 받은편지함 안읽음 개수를 macOS Dock 뱃지에 반영한다. 0 이면 뱃지를 지운다.
+/// 부가 정보라 실패는 삼키고 앱을 막지 않는다. 비 macOS 에서는 아무것도 안 한다.
+async fn refresh_dock_badge(app: &tauri::AppHandle, gmail: &GmailService) {
+    #[cfg(target_os = "macos")]
+    {
+        let count = match gmail.unread_count().await {
+            Ok(count) => count,
+            Err(error) => {
+                eprintln!("todo dock badge: unread count failed: {error}");
+                return;
+            }
+        };
+        if let Some(window) = app.get_webview_window("main") {
+            let badge = (count > 0).then_some(count as i64);
+            let _ = window.set_badge_count(badge);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, gmail);
+    }
 }
 
 fn server_startup_message(error: &StartupError) -> String {
@@ -763,6 +796,7 @@ pub fn run() {
             server_status,
             gmail_accounts,
             gmail_list,
+            gmail_unread_count,
             gmail_get_body,
             gmail_archive,
             gmail_set_read,

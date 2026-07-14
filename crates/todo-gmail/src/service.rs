@@ -290,6 +290,12 @@ impl GmailService {
         store::query_messages(self.core.pool(), &filter).await
     }
 
+    /// 받은편지함 안읽음 개수. 전 계정 합산. Mail 탭·Dock 뱃지가 쓴다.
+    pub async fn unread_count(&self) -> Result<u64, Error> {
+        let count = store::count_inbox_unread(self.core.pool()).await?;
+        Ok(count.max(0) as u64)
+    }
+
     /// 보관: inbox 에서 뺀다. 로컬을 즉시 반영하고 Gmail 반영은 아웃박스로 미룬다.
     pub async fn archive(&self, account_id: &str, gmail_id: &str) -> Result<(), Error> {
         let pool = self.core.pool();

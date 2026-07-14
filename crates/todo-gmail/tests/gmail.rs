@@ -497,6 +497,69 @@ async fn list_filters_by_folder_account_and_query() {
     assert_eq!(matched[0].gmail_id, "m1");
 }
 
+async fn seed_unread(
+    core: &TodoCore,
+    account_id: &str,
+    gmail_id: &str,
+    in_inbox: i64,
+    is_unread: i64,
+) {
+    sqlx::query(
+        "INSERT INTO gmail_messages \
+         (account_id, gmail_id, thread_id, internal_date, in_inbox, is_unread, updated_at) \
+         VALUES (?, ?, 't1', 0, ?, ?, '2026-07-14T00:00:00.000Z')",
+    )
+    .bind(account_id)
+    .bind(gmail_id)
+    .bind(in_inbox)
+    .bind(is_unread)
+    .execute(core.pool())
+    .await
+    .expect("seed unread");
+}
+
+#[tokio::test]
+async fn unread_count_sums_inbox_unread_across_accounts() {
+    let harness = harness().await;
+    let a = todo_gmail::store::insert_account(harness.core.pool(), "a@x.com")
+        .await
+        .unwrap();
+    let b = todo_gmail::store::insert_account(harness.core.pool(), "b@x.com")
+        .await
+        .unwrap();
+    seed_unread(&harness.core, &a.id, "m1", 1, 1).await; // 받은편지함 안읽음 → 셈
+    seed_unread(&harness.core, &a.id, "m2", 1, 0).await; // 읽음 → 제외
+    seed_unread(&harness.core, &a.id, "m3", 0, 1).await; // 보관 안읽음 → 제외
+    seed_unread(&harness.core, &b.id, "m4", 1, 1).await; // 다른 계정 안읽음 → 셈
+
+    assert_eq!(harness.service.unread_count().await.unwrap(), 2);
+}
+
+#[tokio::test]
+async fn unread_count_drops_when_message_read_or_archived() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "a@x.com")
+        .await
+        .unwrap();
+    seed_unread(&harness.core, &account.id, "m1", 1, 1).await;
+    seed_unread(&harness.core, &account.id, "m2", 1, 1).await;
+    assert_eq!(harness.service.unread_count().await.unwrap(), 2);
+
+    harness
+        .service
+        .set_read(&account.id, "m1", true)
+        .await
+        .unwrap();
+    assert_eq!(harness.service.unread_count().await.unwrap(), 1);
+
+    harness
+        .service
+        .archive(&account.id, "m2")
+        .await
+        .unwrap();
+    assert_eq!(harness.service.unread_count().await.unwrap(), 0);
+}
+
 #[tokio::test]
 async fn list_marks_messages_linked_to_active_todos() {
     let harness = harness().await;

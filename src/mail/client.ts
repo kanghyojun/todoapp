@@ -9,6 +9,7 @@ import type {
 export interface GmailClient {
   accounts(): Promise<GmailAccount[]>;
   list(filter: MailFilter): Promise<MailListItem[]>;
+  unreadCount(): Promise<number>;
   getBody(accountId: string, gmailId: string): Promise<MailBody>;
   archive(accountId: string, gmailId: string): Promise<void>;
   setRead(accountId: string, gmailId: string, read: boolean): Promise<void>;
@@ -136,6 +137,17 @@ export function decodeMailList(value: unknown): MailListItem[] {
   return value.map(decodeMailListItem);
 }
 
+// 받은편지함 안읽음 개수. 음수·비정수·NaN 은 서버 오류로 본다.
+export function decodeUnreadCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new GmailClientError(
+      "server returned an invalid unread count",
+      "invalid_response",
+    );
+  }
+  return Math.trunc(value);
+}
+
 export function decodeBody(value: unknown): MailBody {
   if (
     !isRecord(value) ||
@@ -167,6 +179,10 @@ export class TauriGmailClient implements GmailClient {
 
   async list(filter: MailFilter): Promise<MailListItem[]> {
     return decodeMailList(await this.request("gmail_list", { filter }));
+  }
+
+  async unreadCount(): Promise<number> {
+    return decodeUnreadCount(await this.request("gmail_unread_count"));
   }
 
   async getBody(accountId: string, gmailId: string): Promise<MailBody> {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { decodeAccount, decodeBody, decodeMailListItem } from "./client";
+import {
+  decodeAccount,
+  decodeBody,
+  decodeMailListItem,
+  decodeUnreadCount,
+} from "./client";
 
 describe("decodeMailListItem", () => {
   const valid = {
@@ -64,5 +69,23 @@ describe("decodeBody", () => {
     });
     expect(body.body_text).toBe("hello");
     expect(body.body_html).toBeNull();
+  });
+});
+
+describe("decodeUnreadCount", () => {
+  it("0 이상 정수를 그대로 돌려준다", () => {
+    expect(decodeUnreadCount(0)).toBe(0);
+    expect(decodeUnreadCount(5)).toBe(5);
+  });
+
+  it("소수는 버려 정수로 만든다", () => {
+    expect(decodeUnreadCount(3.9)).toBe(3);
+  });
+
+  it("숫자가 아니거나 음수·NaN 이면 던진다", () => {
+    expect(() => decodeUnreadCount("5")).toThrow();
+    expect(() => decodeUnreadCount(-1)).toThrow();
+    expect(() => decodeUnreadCount(Number.NaN)).toThrow();
+    expect(() => decodeUnreadCount(null)).toThrow();
   });
 });

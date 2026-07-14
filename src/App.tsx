@@ -188,6 +188,9 @@ export const App: Component<AppProps> = (props) => {
   const [mailPreviewBody, setMailPreviewBody] = createSignal<MailBody | null>(null);
   // 메일 상세가 열려 있으면 할 일 상세를 그 폭만큼 왼쪽으로 밀어 나란히 세운다.
   const [mailDetailOpen, setMailDetailOpen] = createSignal(false);
+  // 받은편지함 안읽음 개수. Mail 탭 라벨 옆 뱃지에 쓴다. 백엔드가 단일 출처라
+  // mail:changed 때마다 다시 읽는다. Dock 뱃지는 백엔드가 따로 세팅한다.
+  const [mailUnread, setMailUnread] = createSignal(0);
   const undo = new UndoStack();
   const rowElements = new Map<string, HTMLButtonElement>();
   let editorInput: HTMLInputElement | undefined;
@@ -234,6 +237,16 @@ export const App: Component<AppProps> = (props) => {
       setLinearStatus(await props.client.linearStatus());
     } catch {
       // status 는 항상 200 이어야 한다. 실패해도 앱을 막지 않는다.
+    }
+  }
+
+  async function refreshMailUnread(): Promise<void> {
+    const gmail = props.gmailClient;
+    if (gmail === undefined) return;
+    try {
+      setMailUnread(await gmail.unreadCount());
+    } catch {
+      // 개수는 부가 정보다. 실패해도 직전 값을 두고 앱을 막지 않는다.
     }
   }
 
@@ -939,12 +952,18 @@ export const App: Component<AppProps> = (props) => {
   onMount(() => {
     void load();
     void refreshLinearStatus();
+    void refreshMailUnread();
     const unsubscribe = props.client.subscribe(() => void load());
+    // 메일이 바뀌면(동기화·읽음·보관) 탭 뱃지 개수를 다시 읽는다.
+    const unsubscribeMail = props.gmailClient?.subscribe(
+      () => void refreshMailUnread(),
+    );
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", clearMeta);
     onCleanup(() => {
       unsubscribe();
+      unsubscribeMail?.();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", clearMeta);
@@ -987,6 +1006,11 @@ export const App: Component<AppProps> = (props) => {
             onClick={() => setActiveTab("mail")}
           >
             Mail
+            <Show when={mailUnread() > 0}>
+              <span class="tab-badge" aria-label={`안읽음 ${mailUnread()}개`}>
+                {mailUnread() > 99 ? "99+" : mailUnread()}
+              </span>
+            </Show>
           </button>
         </Show>
       </nav>

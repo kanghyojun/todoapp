@@ -299,6 +299,16 @@ pub(crate) async fn query_messages(
         .await?)
 }
 
+/// 받은편지함 안읽음 개수. 전 계정 합산. Mail 탭·Dock 뱃지가 이 수를 쓴다.
+/// 보관(in_inbox = 0)한 안읽음은 세지 않는다.
+pub(crate) async fn count_inbox_unread(pool: &SqlitePool) -> Result<i64, Error> {
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM gmail_messages WHERE in_inbox = 1 AND is_unread = 1")
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
 pub(crate) async fn local_set_inbox(
     pool: &SqlitePool,
     account_id: &str,

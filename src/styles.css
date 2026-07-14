@@ -144,6 +144,25 @@ kbd {
   font-weight: 700;
 }
 
+/* 안읽은 메일 개수. 눈에 띄게 빨강 알약. 한 자리는 원, 여러 자리는 늘어난다. */
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+}
+
 .todo-view {
   max-width: 1180px;
   padding: 22px 24px 80px;
