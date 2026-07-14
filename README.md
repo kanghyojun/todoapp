@@ -46,6 +46,8 @@ pnpm tauri build    # 배포용 .app
 
 Xcode Command Line Tools가 필요합니다. `xcode-select --install`
 
+배포 `.app`은 `tauri.conf.json`의 `signingIdentity`(Apple Development)로 서명됩니다. 그래서 키체인 항목(Gmail 토큰·Linear 키)에 한 번 "항상 허용"하면 이후로는 안 묻습니다. 반면 `tauri dev` 개발 빌드는 tauri가 서명을 하지 않아(adhoc) Rust를 재빌드할 때마다 키체인 프롬프트가 다시 뜹니다. 프론트만 고치는 동안(HMR)은 뜨지 않습니다. tauri가 dev 서명을 지원하지 않는 한계라 그대로 둡니다.
+
 ## 테스트
 
 ```bash
