@@ -123,6 +123,7 @@ type ShortcutGroup = { title: string; items: readonly [string, string][] };
 
 const GLOBAL_SHORTCUTS: readonly [string, string][] = [
   ["⌘K / Ctrl+K", "커맨드 팔레트"],
+  ["팔레트에서 ^N / ^P (↓ / ↑)", "다음 / 이전 항목"],
   ["[ / ]", "이전 / 다음 탭"],
   ["?", "단축키 도움말"],
   ["Esc", "닫기 · 취소 · 선택 해제"],
@@ -186,6 +187,9 @@ export const App: Component<AppProps> = (props) => {
   const [priorityChordActive, setPriorityChordActive] = createSignal(false);
   const [paletteQuery, setPaletteQuery] = createSignal("");
   const [paletteTodos, setPaletteTodos] = createSignal<Todo[]>([]);
+  // 팔레트에서 Ctrl+N/P·↓/↑ 로 옮기는 하이라이트 위치. 목록이 바뀌어도
+  // 범위를 벗어나지 않게 읽을 때 paletteCursor 로 한 번 조인다.
+  const [paletteIndex, setPaletteIndex] = createSignal(0);
   const [theme, setTheme] = createSignal<ThemePreference>(readPreference(localStorage));
   const [linearStatus, setLinearStatus] = createSignal<LinearStatus | null>(null);
   const [deferredTodos, setDeferredTodos] = createSignal<Todo[]>([]);
@@ -216,6 +220,7 @@ export const App: Component<AppProps> = (props) => {
   let editorInput: HTMLInputElement | undefined;
   let descEditor: HTMLTextAreaElement | undefined;
   let paletteInput: HTMLInputElement | undefined;
+  let paletteResults: HTMLDivElement | undefined;
   let paletteRequest = 0;
   let mailPreviewEl: HTMLElement | undefined;
 
@@ -250,6 +255,11 @@ export const App: Component<AppProps> = (props) => {
       ...commands,
       ...paletteTodos().map((todo): PaletteItem => ({ kind: "todo", todo })),
     ];
+  });
+  // 목록 길이가 줄어도 하이라이트가 밖으로 나가지 않도록 읽을 때 클램프한다.
+  const paletteCursor = createMemo(() => {
+    const count = paletteItems().length;
+    return count === 0 ? 0 : Math.min(paletteIndex(), count - 1);
   });
 
   // 공통 + 현재 탭 섹션. mail 탭은 gmailClient 가 있을 때만 열리므로 안전하다.
@@ -664,11 +674,13 @@ export const App: Component<AppProps> = (props) => {
     setInputMode("palette");
     setPaletteQuery("");
     setPaletteTodos([]);
+    setPaletteIndex(0);
     queueMicrotask(() => paletteInput?.focus());
   }
 
   async function searchPalette(value: string): Promise<void> {
     setPaletteQuery(value);
+    setPaletteIndex(0);
     const request = ++paletteRequest;
     if (value.trim() === "") {
       setPaletteTodos([]);
@@ -687,7 +699,7 @@ export const App: Component<AppProps> = (props) => {
     }
   }
 
-  async function choosePaletteItem(item = paletteItems()[0]): Promise<void> {
+  async function choosePaletteItem(item = paletteItems()[paletteCursor()]): Promise<void> {
     if (item === undefined) return;
     if (item.kind === "todo") {
       closeOverlay();
@@ -900,10 +912,26 @@ export const App: Component<AppProps> = (props) => {
       case "OpenHelp":
         setOverlay("help");
         break;
+      case "MovePaletteCursor":
+        movePaletteCursor(action.direction);
+        break;
       case "ChoosePaletteItem":
         await choosePaletteItem();
         break;
     }
+  }
+
+  function movePaletteCursor(direction: "next" | "prev"): void {
+    const count = paletteItems().length;
+    if (count === 0) return;
+    const delta = direction === "next" ? 1 : -1;
+    // 끝에서 한 칸 더 가면 반대쪽 끝으로 감싼다.
+    const next = (paletteCursor() + delta + count) % count;
+    setPaletteIndex(next);
+    queueMicrotask(() => {
+      const options = paletteResults?.querySelectorAll<HTMLElement>('[role="option"]');
+      options?.[next]?.scrollIntoView({ block: "nearest" });
+    });
   }
 
   function scopeStack(): ShortcutScope[] {
@@ -1406,14 +1434,14 @@ export const App: Component<AppProps> = (props) => {
               placeholder="명령 또는 할 일 검색"
               onInput={(event) => void searchPalette(event.currentTarget.value)}
             />
-            <div class="palette-results" role="listbox">
+            <div class="palette-results" role="listbox" ref={paletteResults}>
               <For each={paletteItems()}>
                 {(item, index) => (
                   <button
                     type="button"
                     role="option"
-                    aria-selected={index() === 0}
-                    classList={{ active: index() === 0 }}
+                    aria-selected={index() === paletteCursor()}
+                    classList={{ active: index() === paletteCursor() }}
                     onClick={() => void choosePaletteItem(item)}
                   >
                     <span>{item.kind === "command" ? item.label : item.todo.title}</span>

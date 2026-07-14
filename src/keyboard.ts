@@ -62,6 +62,7 @@ export type Action =
   | { type: "CloseOverlay" }
   | { type: "OpenSearch" }
   | { type: "OpenHelp" }
+  | { type: "MovePaletteCursor"; direction: "next" | "prev" }
   | { type: "ChoosePaletteItem" };
 
 const PRIORITY_KEYS: Readonly<Record<string, Priority>> = {
@@ -106,6 +107,17 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
     return escapeAction(state);
   }
   if (event.focus === "text") {
+    // 팔레트 입력창은 포커스가 잡혀 있어도 Ctrl+N/P(와 ↓/↑)로 목록을 넘긴다.
+    // 한 줄 입력이라 이 키들의 기본 동작은 어차피 아무 일도 안 한다.
+    if (state.inputMode === "palette") {
+      const lower = event.key.toLowerCase();
+      if (event.key === "ArrowDown" || (event.ctrlKey === true && lower === "n")) {
+        return { type: "MovePaletteCursor", direction: "next" };
+      }
+      if (event.key === "ArrowUp" || (event.ctrlKey === true && lower === "p")) {
+        return { type: "MovePaletteCursor", direction: "prev" };
+      }
+    }
     if (event.key === "Enter") {
       if (state.inputMode === "palette") {
         return { type: "ChoosePaletteItem" };

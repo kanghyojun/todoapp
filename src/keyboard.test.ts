@@ -101,6 +101,35 @@ describe("keyboard handler", () => {
     ).toEqual({ type: "CloseOverlay" });
   });
 
+  it("moves the palette highlight with Ctrl+N/P and arrows", () => {
+    const palette = state({
+      scopeStack: ["global", "todo", "palette"],
+      inputMode: "palette",
+    });
+    expect(handleKey(palette, event("n", { focus: "text", ctrlKey: true }))).toEqual({
+      type: "MovePaletteCursor",
+      direction: "next",
+    });
+    expect(handleKey(palette, event("p", { focus: "text", ctrlKey: true }))).toEqual({
+      type: "MovePaletteCursor",
+      direction: "prev",
+    });
+    expect(handleKey(palette, event("ArrowDown", { focus: "text" }))).toEqual({
+      type: "MovePaletteCursor",
+      direction: "next",
+    });
+    expect(handleKey(palette, event("ArrowUp", { focus: "text" }))).toEqual({
+      type: "MovePaletteCursor",
+      direction: "prev",
+    });
+    // Ctrl 없는 맨 n/p 는 그냥 입력이라 아무 액션도 아니다.
+    expect(handleKey(palette, event("n", { focus: "text" }))).toBeNull();
+    // 팔레트가 아닌 인라인 입력에서는 Ctrl+N 이 항목 이동이 아니다.
+    expect(
+      handleKey(state({ inputMode: "create" }), event("n", { focus: "text", ctrlKey: true })),
+    ).toBeNull();
+  });
+
   it("targets every selected id for bulk actions", () => {
     expect(handleKey(state(), event("x"))).toEqual({
       type: "ToggleSelection",
