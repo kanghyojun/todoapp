@@ -13,7 +13,7 @@ use crate::{
     dto::{
         McpCreateRequest, McpIdRequest, McpLinkRequest, McpListRequest, McpStatusRequest,
         McpUpdateRequest, parse_iso_date, parse_priority, parse_required_status, parse_status,
-        parse_todo_id, parse_wire_due_date,
+        parse_wire_due_date, resolve_ref,
     },
     error::ApiError,
 };
@@ -71,7 +71,7 @@ impl TodoMcp {
     }
 
     async fn update(&self, request: McpUpdateRequest) -> Result<Todo, ApiError> {
-        let id = parse_todo_id(&request.id)?;
+        let id = resolve_ref(&self.core, &request.id).await?;
         let has_patch = request.title.is_some()
             || request.description.is_some()
             || request.status.is_some()
@@ -116,7 +116,7 @@ impl TodoMcp {
     )]
     async fn todo_get(&self, Parameters(request): Parameters<McpIdRequest>) -> CallToolResult {
         let result = async {
-            let id = parse_todo_id(&request.id)?;
+            let id = resolve_ref(&self.core, &request.id).await?;
             Ok(self.core.get_todo(id).await?)
         }
         .await;
@@ -151,7 +151,7 @@ impl TodoMcp {
         Parameters(request): Parameters<McpStatusRequest>,
     ) -> CallToolResult {
         let result = async {
-            let id = parse_todo_id(&request.id)?;
+            let id = resolve_ref(&self.core, &request.id).await?;
             let status = parse_required_status(&request.status)?;
             Ok(self.core.set_status(id, status).await?)
         }
@@ -164,7 +164,7 @@ impl TodoMcp {
     )]
     async fn todo_delete(&self, Parameters(request): Parameters<McpIdRequest>) -> CallToolResult {
         let result = async {
-            let id = parse_todo_id(&request.id)?;
+            let id = resolve_ref(&self.core, &request.id).await?;
             self.core.delete_todo(id).await?;
             Ok(json!({ "id": id, "deleted": true }))
         }
@@ -175,7 +175,7 @@ impl TodoMcp {
     #[tool(description = "Restore a soft-deleted todo by UUID and return it.")]
     async fn todo_restore(&self, Parameters(request): Parameters<McpIdRequest>) -> CallToolResult {
         let result = async {
-            let id = parse_todo_id(&request.id)?;
+            let id = resolve_ref(&self.core, &request.id).await?;
             Ok(self.core.restore_todo(id).await?)
         }
         .await;
@@ -190,7 +190,7 @@ impl TodoMcp {
         Parameters(request): Parameters<McpLinkRequest>,
     ) -> CallToolResult {
         let result = async {
-            let id = parse_todo_id(&request.id)?;
+            let id = resolve_ref(&self.core, &request.id).await?;
             self.linear.link(id, &request.issue_ref).await?;
             Ok(json!({ "linked": true }))
         }
@@ -211,7 +211,7 @@ impl ServerHandler for TodoMcp {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "Manage local todos. Priority values are strings: none, urgent, high, medium, or low. Due dates accept natural language on writes.",
+                "Manage local todos. A todo is addressed by its short code such as ab3c (shown as #ab3c, case-insensitive) or its full UUID. Priority values are strings: none, urgent, high, medium, or low. Due dates accept natural language on writes.",
             );
         // 기본값은 rmcp 자신의 이름과 버전이다. MCP 클라이언트 목록에 라이브러리 이름이 뜬다.
         info.server_info.name = "todo".to_owned();

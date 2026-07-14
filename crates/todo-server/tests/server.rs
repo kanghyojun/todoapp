@@ -950,6 +950,58 @@ async fn mcp_todo_list_returns_a_structured_object_not_a_bare_array() {
     assert_eq!(todos[0]["title"], "list target");
 }
 
+#[tokio::test]
+async fn a_short_code_addresses_a_todo_over_rest_and_mcp() {
+    let server = TestServer::start(Vec::new()).await;
+    let created: Value = server
+        .mcp(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "todo_create", "arguments": { "title": "code addressable" } }
+        }))
+        .await
+        .json()
+        .await
+        .expect("decode MCP create");
+    let structured = &created["result"]["structuredContent"];
+    let code = structured["code"]
+        .as_str()
+        .expect("code in response")
+        .to_owned();
+    let id = structured["id"]
+        .as_str()
+        .expect("id in response")
+        .to_owned();
+    assert_eq!(code.len(), 4, "response carries a four-char code");
+
+    // MCP todo_get 을 코드로 부른다.
+    let got: Value = server
+        .mcp(json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "todo_get", "arguments": { "id": code } }
+        }))
+        .await
+        .json()
+        .await
+        .expect("decode MCP get by code");
+    assert_eq!(got["result"]["isError"], false);
+    assert_eq!(got["result"]["structuredContent"]["id"], id);
+
+    // REST 를 대문자 코드로 부른다. 대소문자를 가리지 않아야 한다.
+    let rest = server
+        .authorized(
+            server
+                .client
+                .get(server.url(&format!("/api/v1/todos/{}", code.to_uppercase()))),
+        )
+        .send()
+        .await
+        .expect("REST get by code");
+    assert_eq!(rest.status(), StatusCode::OK);
+    let body: Value = rest.json().await.expect("decode REST todo");
+    assert_eq!(body["id"], id);
+    assert_eq!(body["code"], code);
+}
+
 #[test]
 fn token_is_stable_hex_and_stored_with_private_permissions() {
     let temp_dir = tempfile::tempdir().expect("create token tempdir");

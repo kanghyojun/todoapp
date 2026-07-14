@@ -128,10 +128,20 @@ pub(crate) fn parse_query<T>(
         .map_err(|error| ApiError::invalid_input(error.body_text()))
 }
 
-pub(crate) fn parse_todo_id(value: &str) -> Result<todo_core::TodoId, ApiError> {
-    value
-        .parse()
-        .map_err(|_| ApiError::invalid_input("id must be a UUID"))
+/// 짧은 코드(`#ab3c`)나 UUID 로 todo 를 가리킨다. 코드면 활성 todo 를 조회해
+/// id 로 바꾸고, 없으면 not_found 다.
+pub(crate) async fn resolve_ref(
+    core: &todo_core::TodoCore,
+    reference: &str,
+) -> Result<todo_core::TodoId, ApiError> {
+    match todo_core::parse_ref(reference) {
+        Some(todo_core::TodoRef::Id(id)) => Ok(id),
+        Some(todo_core::TodoRef::Code(code)) => core
+            .id_for_code(&code)
+            .await?
+            .ok_or_else(|| ApiError::not_found("todo not found")),
+        None => Err(ApiError::not_found("todo not found")),
+    }
 }
 
 pub(crate) fn parse_iso_date(value: &str) -> Result<NaiveDate, ApiError> {

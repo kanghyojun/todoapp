@@ -14,7 +14,7 @@ use todo_linear::{LinearService, LinearStatus, PendingChoice, PullSummary};
 use crate::{
     dto::{
         CreateTodoRequest, DeferRequest, LinearDoneStateRequest, LinearKeyRequest,
-        LinearLinkRequest, ListQuery, UpdateTodoRequest, parse_json, parse_query, parse_todo_id,
+        LinearLinkRequest, ListQuery, UpdateTodoRequest, parse_json, parse_query, resolve_ref,
     },
     error::ApiError,
 };
@@ -77,7 +77,12 @@ async fn get_todo(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Todo>, ApiError> {
-    Ok(Json(state.core.get_todo(parse_todo_id(&id)?).await?))
+    Ok(Json(
+        state
+            .core
+            .get_todo(resolve_ref(&state.core, &id).await?)
+            .await?,
+    ))
 }
 
 async fn update_todo(
@@ -85,7 +90,7 @@ async fn update_todo(
     Path(id): Path<String>,
     payload: Result<Json<UpdateTodoRequest>, JsonRejection>,
 ) -> Result<Json<Todo>, ApiError> {
-    let id = parse_todo_id(&id)?;
+    let id = resolve_ref(&state.core, &id).await?;
     let request = parse_json(payload)?;
     Ok(Json(
         state
@@ -99,7 +104,10 @@ async fn delete_todo(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state.core.delete_todo(parse_todo_id(&id)?).await?;
+    state
+        .core
+        .delete_todo(resolve_ref(&state.core, &id).await?)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -107,7 +115,12 @@ async fn restore_todo(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Todo>, ApiError> {
-    Ok(Json(state.core.restore_todo(parse_todo_id(&id)?).await?))
+    Ok(Json(
+        state
+            .core
+            .restore_todo(resolve_ref(&state.core, &id).await?)
+            .await?,
+    ))
 }
 
 async fn defer_todo(
@@ -115,7 +128,7 @@ async fn defer_todo(
     Path(id): Path<String>,
     payload: Result<Json<DeferRequest>, JsonRejection>,
 ) -> Result<Json<Todo>, ApiError> {
-    let id = parse_todo_id(&id)?;
+    let id = resolve_ref(&state.core, &id).await?;
     // 본문이 비어도 무기한 보류로 받는다.
     let request = payload.map(|Json(request)| request).unwrap_or_default();
     Ok(Json(state.core.defer_todo(id, &request.until).await?))
@@ -126,7 +139,7 @@ async fn link_linear(
     Path(id): Path<String>,
     payload: Result<Json<LinearLinkRequest>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let id = parse_todo_id(&id)?;
+    let id = resolve_ref(&state.core, &id).await?;
     let payload = parse_json(payload)?;
     state.linear.link(id, &payload.issue_ref).await?;
     Ok(Json(json!({ "linked": true })))
