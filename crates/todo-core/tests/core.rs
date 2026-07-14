@@ -31,6 +31,78 @@ async fn in_memory_database_keeps_migrations_and_data_on_one_connection() {
 }
 
 #[tokio::test]
+async fn create_assigns_a_unique_four_char_code() {
+    let (_database, core) = test_core().await;
+    let a = core
+        .create_todo(CreateTodoInput::new("code a"))
+        .await
+        .expect("create a");
+    let b = core
+        .create_todo(CreateTodoInput::new("code b"))
+        .await
+        .expect("create b");
+    assert_eq!(
+        a.code.len(),
+        4,
+        "code should be four chars, got {:?}",
+        a.code
+    );
+    assert_ne!(a.code, b.code, "codes must differ");
+}
+
+#[tokio::test]
+async fn id_for_code_resolves_case_insensitively_and_misses_gracefully() {
+    let (_database, core) = test_core().await;
+    let todo = core
+        .create_todo(CreateTodoInput::new("resolve me"))
+        .await
+        .expect("create todo");
+
+    assert_eq!(
+        core.id_for_code(&todo.code).await.expect("lookup"),
+        Some(todo.id)
+    );
+    assert_eq!(
+        core.id_for_code(&format!("#{}", todo.code.to_uppercase()))
+            .await
+            .expect("lookup upper"),
+        Some(todo.id),
+        "code lookup must ignore case and a leading #"
+    );
+    assert_eq!(
+        core.id_for_code("2345").await.expect("miss"),
+        None,
+        "unknown code is a graceful miss"
+    );
+}
+
+#[tokio::test]
+async fn reconnect_backfills_codes_missing_from_older_rows() {
+    let database = NamedTempFile::new().expect("temporary database");
+    let url = format!("sqlite://{}", database.path().display());
+    let core = TodoCore::connect(&url).await.expect("connect");
+    let todo = core
+        .create_todo(CreateTodoInput::new("legacy row"))
+        .await
+        .expect("create todo");
+    // 코드 컬럼이 막 생긴 예전 행을 흉내낸다.
+    sqlx::query("UPDATE todos SET code = NULL WHERE id = ?")
+        .bind(todo.id.to_string())
+        .execute(core.pool())
+        .await
+        .expect("null out code");
+    drop(core);
+
+    let core = TodoCore::connect(&url).await.expect("reconnect");
+    let refreshed = core.get_todo(todo.id).await.expect("read todo");
+    assert_eq!(
+        refreshed.code.len(),
+        4,
+        "reconnect should backfill the code"
+    );
+}
+
+#[tokio::test]
 async fn every_pool_connection_has_required_sqlite_pragmas() {
     let (_database, core) = test_core().await;
     let mut connections = Vec::new();

@@ -9,7 +9,8 @@ use tokio::sync::broadcast;
 
 use crate::{
     CreateTodoInput, DomainEvent, EmailLinkInput, EmailRef, Error, LinearLinkInput, LinearRef,
-    Priority, Result, Status, Todo, TodoFilter, TodoId, TodoPatch, parse_due_date,
+    Priority, Result, Status, Todo, TodoFilter, TodoId, TodoPatch, code::generate_code,
+    parse_due_date,
 };
 
 #[derive(Clone)]
@@ -36,6 +37,7 @@ impl TodoCore {
         };
         let pool = pool_options.connect_with(options).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
+        backfill_codes(&pool).await?;
         let (events, _) = broadcast::channel(128);
         Ok(Self { pool, events })
     }
@@ -57,25 +59,42 @@ impl TodoCore {
             .due_date
             .map(|date| date.format("%Y-%m-%d").to_string());
         let mut transaction = self.pool.begin().await?;
-        let row = sqlx::query_as::<_, TodoRow>(
-            "INSERT INTO todos \
-             (id, title, description, status, priority, due_date, completed_at, \
-              created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             RETURNING id, title, description, status, priority, due_date, completed_at, \
-                       created_at, updated_at, deleted_at",
-        )
-        .bind(id.to_string())
-        .bind(title)
-        .bind(input.description)
-        .bind(input.status.as_db_str())
-        .bind(input.priority.as_db_integer())
-        .bind(due_date)
-        .bind(completed_at)
-        .bind(&now)
-        .bind(&now)
-        .fetch_one(&mut *transaction)
-        .await?;
+        let mut attempts = 0_u32;
+        let row = loop {
+            let code = generate_code();
+            let result = sqlx::query_as::<_, TodoRow>(
+                "INSERT INTO todos \
+                 (id, code, title, description, status, priority, due_date, completed_at, \
+                  created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 RETURNING id, code, title, description, status, priority, due_date, completed_at, \
+                           created_at, updated_at, deleted_at",
+            )
+            .bind(id.to_string())
+            .bind(&code)
+            .bind(&title)
+            .bind(&input.description)
+            .bind(input.status.as_db_str())
+            .bind(input.priority.as_db_integer())
+            .bind(&due_date)
+            .bind(completed_at)
+            .bind(&now)
+            .bind(&now)
+            .fetch_one(&mut *transaction)
+            .await;
+            match result {
+                Ok(row) => break row,
+                Err(error) if is_unique_violation(&error) => {
+                    attempts += 1;
+                    if attempts >= 16 {
+                        return Err(Error::Database(
+                            "could not allocate a unique todo code".to_owned(),
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
         let todo = row.try_into()?;
         transaction.commit().await?;
 
@@ -83,9 +102,26 @@ impl TodoCore {
         Ok(todo)
     }
 
+    /// 짧은 코드로 활성 todo 의 id 를 찾는다. 없으면 None. 대소문자·`#`·공백을
+    /// 가리지 않는다. 코드 조회 실패는 에러가 아니라 None 이라, 호출자가 404 를 정한다.
+    pub async fn id_for_code(&self, code: &str) -> Result<Option<TodoId>> {
+        let normalized = code.trim().trim_start_matches('#').to_ascii_lowercase();
+        let id: Option<String> =
+            sqlx::query_scalar("SELECT id FROM todos WHERE code = ? AND deleted_at IS NULL")
+                .bind(&normalized)
+                .fetch_optional(&self.pool)
+                .await?;
+        id.map(|id| {
+            TodoId::from_str(&id).map_err(|error| {
+                Error::InvalidInput(format!("invalid todo id in database: {error}"))
+            })
+        })
+        .transpose()
+    }
+
     pub async fn get_todo(&self, id: TodoId) -> Result<Todo> {
         let row = sqlx::query_as::<_, TodoRow>(
-            "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
+            "SELECT t.id, t.code, t.title, t.description, t.status, t.priority, t.due_date, \
                     t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
                     t.deferred_until, \
                     li.identifier AS linear_identifier, li.url AS linear_url, \
@@ -126,7 +162,7 @@ impl TodoCore {
         };
         let mut query = if let Some(expression) = match_expression {
             let mut query = QueryBuilder::<Sqlite>::new(
-                "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
+                "SELECT t.id, t.code, t.title, t.description, t.status, t.priority, t.due_date, \
                  t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
                  t.deferred_until, \
                  li.identifier AS linear_identifier, li.url AS linear_url, \
@@ -144,7 +180,7 @@ impl TodoCore {
             query
         } else {
             QueryBuilder::<Sqlite>::new(
-                "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
+                "SELECT t.id, t.code, t.title, t.description, t.status, t.priority, t.due_date, \
                  t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
                  t.deferred_until, \
                  li.identifier AS linear_identifier, li.url AS linear_url, \
@@ -446,17 +482,34 @@ impl TodoCore {
         let id = TodoId::new();
         let now = now_string();
         let mut transaction = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO todos \
-             (id, title, description, status, priority, due_date, completed_at, created_at, updated_at) \
-             VALUES (?, ?, '', 'todo', 0, NULL, NULL, ?, ?)",
-        )
-        .bind(id.to_string())
-        .bind(title)
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *transaction)
-        .await?;
+        let mut attempts = 0_u32;
+        loop {
+            let code = generate_code();
+            let result = sqlx::query(
+                "INSERT INTO todos \
+                 (id, code, title, description, status, priority, due_date, completed_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, '', 'todo', 0, NULL, NULL, ?, ?)",
+            )
+            .bind(id.to_string())
+            .bind(&code)
+            .bind(&title)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await;
+            match result {
+                Ok(_) => break,
+                Err(error) if is_unique_violation(&error) => {
+                    attempts += 1;
+                    if attempts >= 16 {
+                        return Err(Error::Database(
+                            "could not allocate a unique todo code".to_owned(),
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
         sqlx::query(
             "INSERT INTO email_links \
              (todo_id, account_id, gmail_id, thread_id, subject, from_name, from_email, linked_at) \
@@ -501,6 +554,46 @@ impl TodoCore {
 
 fn now_string() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn is_unique_violation(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .is_some_and(|db| db.is_unique_violation())
+}
+
+/// 코드 컬럼이 막 생겨 값이 비어 있는 기존 행에 코드를 채운다. rowid 순으로
+/// 돌며, 아주 드문 충돌은 새 코드로 재시도한다. 이미 채워진 행은 건드리지 않아
+/// 재실행해도 안전하다.
+async fn backfill_codes(pool: &SqlitePool) -> Result<()> {
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM todos WHERE code IS NULL ORDER BY rowid")
+            .fetch_all(pool)
+            .await?;
+    for id in ids {
+        let mut attempts = 0_u32;
+        loop {
+            let code = generate_code();
+            let result = sqlx::query("UPDATE todos SET code = ? WHERE id = ? AND code IS NULL")
+                .bind(&code)
+                .bind(&id)
+                .execute(pool)
+                .await;
+            match result {
+                Ok(_) => break,
+                Err(error) if is_unique_violation(&error) => {
+                    attempts += 1;
+                    if attempts >= 16 {
+                        return Err(Error::Database(
+                            "could not allocate a unique todo code".to_owned(),
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn is_in_memory_url(database_url: &str) -> bool {
@@ -549,7 +642,7 @@ async fn fetch_todo_row(
     transaction: &mut sqlx::Transaction<'_, Sqlite>,
 ) -> Result<TodoRow> {
     sqlx::query_as::<_, TodoRow>(
-        "SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, \
+        "SELECT t.id, t.code, t.title, t.description, t.status, t.priority, t.due_date, \
                 t.completed_at, t.created_at, t.updated_at, t.deleted_at, \
                 t.deferred_until, \
                 li.identifier AS linear_identifier, li.url AS linear_url, \
@@ -569,6 +662,8 @@ async fn fetch_todo_row(
 #[derive(Debug, FromRow)]
 struct TodoRow {
     id: String,
+    #[sqlx(default)]
+    code: Option<String>,
     title: String,
     description: String,
     status: String,
@@ -608,6 +703,7 @@ impl TryFrom<TodoRow> for Todo {
         validate_date(&row.due_date)?;
         Ok(Self {
             id,
+            code: row.code.unwrap_or_default(),
             title: row.title,
             description: row.description,
             status: Status::from_db(&row.status)?,

@@ -107,6 +107,8 @@ impl Priority {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Todo {
     pub id: TodoId,
+    /// 사람이 부르는 짧은 코드(4 글자). 표시는 `#code`.
+    pub code: String,
     pub title: String,
     pub description: String,
     pub status: Status,
