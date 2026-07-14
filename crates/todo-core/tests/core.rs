@@ -794,6 +794,68 @@ async fn uncompleting_a_linked_todo_does_not_enqueue_another_outbox_row() {
     assert_eq!(pending, 0);
 }
 
+/// 완료했다가 워커가 push 하기 전에 되돌리면, 아직 밀어내지 않은
+/// linear_complete 아웃박스 행을 취소해야 한다. 안 그러면 워커가 뒤늦게
+/// 그 행을 밀어내 Linear 이슈를 닫아버린다.
+#[tokio::test]
+async fn reopening_before_flush_cancels_pending_outbox_row() {
+    let (_database, core) = test_core().await;
+    let todo = core
+        .create_todo(CreateTodoInput::new("reopen before flush"))
+        .await
+        .expect("create todo");
+    core.link_linear(todo.id, linear_link("reopen-before-flush-issue"))
+        .await
+        .expect("link todo");
+    core.set_status(todo.id, Status::Done)
+        .await
+        .expect("mark done");
+
+    // 워커가 push 하기 전이라 아웃박스 행은 아직 pending 이다.
+    core.set_status(todo.id, Status::InProgress)
+        .await
+        .expect("reopen todo");
+
+    let pending = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sync_outbox WHERE todo_id = ? AND completed_at IS NULL",
+    )
+    .bind(todo.id.to_string())
+    .fetch_one(core.pool())
+    .await
+    .expect("count pending rows");
+    assert_eq!(pending, 0);
+}
+
+/// 보류(defer)도 done 을 벗어나는 전이다. 워커 flush 전에 보류로 보내면
+/// 마찬가지로 pending linear_complete 를 취소해야 한다.
+#[tokio::test]
+async fn deferring_before_flush_cancels_pending_outbox_row() {
+    let (_database, core) = test_core().await;
+    let todo = core
+        .create_todo(CreateTodoInput::new("defer before flush"))
+        .await
+        .expect("create todo");
+    core.link_linear(todo.id, linear_link("defer-before-flush-issue"))
+        .await
+        .expect("link todo");
+    core.set_status(todo.id, Status::Done)
+        .await
+        .expect("mark done");
+
+    core.defer_todo(todo.id, "")
+        .await
+        .expect("defer todo");
+
+    let pending = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sync_outbox WHERE todo_id = ? AND completed_at IS NULL",
+    )
+    .bind(todo.id.to_string())
+    .fetch_one(core.pool())
+    .await
+    .expect("count pending rows");
+    assert_eq!(pending, 0);
+}
+
 #[tokio::test]
 async fn deleted_todo_is_not_found_before_due_date_validation() {
     let (_database, core) = test_core().await;

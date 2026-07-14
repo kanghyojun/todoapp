@@ -209,8 +209,10 @@ impl LinearService {
         // 이 워커가 5초마다 돌면서 키를 먼저 읽던 것이, 서명 안 된 개발 빌드에서
         // 유휴 상태에도 키체인 프롬프트가 쏟아지던 원인이었다.
         let rows = sqlx::query_as::<_, OutboxRow>(
-            "SELECT o.id, o.attempts, l.issue_id, l.team_id \
-             FROM sync_outbox o JOIN linear_links l ON l.todo_id = o.todo_id \
+            "SELECT o.id, o.attempts, l.issue_id, l.team_id, t.status \
+             FROM sync_outbox o \
+             JOIN linear_links l ON l.todo_id = o.todo_id \
+             JOIN todos t ON t.id = o.todo_id \
              WHERE o.completed_at IS NULL AND o.next_attempt_at <= ? \
              ORDER BY o.created_at ASC, o.id ASC",
         )
@@ -228,6 +230,7 @@ impl LinearService {
             match self.process_outbox_row(&key, &row).await {
                 Ok(ProcessOutcome::Pushed) => summary.pushed += 1,
                 Ok(ProcessOutcome::NeedsChoice) => summary.needs_choice += 1,
+                Ok(ProcessOutcome::Skipped) => summary.skipped += 1,
                 Err(error) => {
                     self.record_failure(&row, &error).await?;
                     summary.failed += 1;
@@ -363,6 +366,17 @@ impl LinearService {
         key: &str,
         row: &OutboxRow,
     ) -> Result<ProcessOutcome, Error> {
+        // 완료 명령을 큐에 넣은 뒤 사용자가 완료를 되돌렸을 수 있다. 취소를
+        // 놓친 레이스까지 대비해, 더 이상 완료가 아닌 항목은 이슈를 닫지 않고
+        // 이 행을 정리만 한다. 재시도로 다시 밀리지 않게 완료 처리한다.
+        if row.status != "done" {
+            sqlx::query("UPDATE sync_outbox SET completed_at = ?, last_error = NULL WHERE id = ?")
+                .bind(now_string())
+                .bind(row.id)
+                .execute(self.core.pool())
+                .await?;
+            return Ok(ProcessOutcome::Skipped);
+        }
         let setting_key = format!("linear.done_state.{}", row.team_id);
         let configured_state = get_setting(&self.core, &setting_key).await?;
         if configured_state.is_none() && self.needs_choice.read().await.contains_key(&row.team_id) {
@@ -555,6 +569,8 @@ pub struct WorkerSummary {
     pub pushed: u64,
     pub failed: u64,
     pub needs_choice: u64,
+    /// 완료가 되돌려져 이슈를 닫지 않고 정리만 한 행 수.
+    pub skipped: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -702,6 +718,9 @@ struct OutboxRow {
     attempts: i64,
     issue_id: String,
     team_id: String,
+    /// 아웃박스 행이 아니라 지금 이 todo 의 상태다. 큐에 담긴 뒤 완료가
+    /// 되돌려졌는지 push 직전에 확인하려고 함께 읽는다.
+    status: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -719,6 +738,7 @@ struct CountRow {
 enum ProcessOutcome {
     Pushed,
     NeedsChoice,
+    Skipped,
 }
 
 async fn complete_outbox_row(

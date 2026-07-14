@@ -303,6 +303,8 @@ impl TodoCore {
         if updated.rows_affected() == 0 {
             return Err(Error::NotFound(id));
         }
+        // 보류도 done 을 벗어나는 전이다. 밀어내지 않은 완료 명령을 취소한다.
+        cancel_pending_completion(&mut transaction, id).await?;
         let todo = fetch_todo_row(id, &mut transaction).await?.try_into()?;
         transaction.commit().await?;
 
@@ -361,23 +363,30 @@ impl TodoCore {
         if updated.rows_affected() == 0 {
             return Err(Error::NotFound(id));
         }
-        let outbox_inserted = if patch.status == Some(Status::Done) {
-            sqlx::query(
-                "INSERT OR IGNORE INTO sync_outbox \
-                 (todo_id, kind, next_attempt_at, created_at) \
-                 SELECT ?, 'linear_complete', ?, ? \
-                 WHERE EXISTS (SELECT 1 FROM linear_links WHERE todo_id = ?)",
-            )
-            .bind(id.to_string())
-            .bind(&now)
-            .bind(&now)
-            .bind(id.to_string())
-            .execute(&mut *transaction)
-            .await?
-            .rows_affected()
-                == 1
-        } else {
-            false
+        let outbox_inserted = match patch.status {
+            Some(Status::Done) => {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO sync_outbox \
+                     (todo_id, kind, next_attempt_at, created_at) \
+                     SELECT ?, 'linear_complete', ?, ? \
+                     WHERE EXISTS (SELECT 1 FROM linear_links WHERE todo_id = ?)",
+                )
+                .bind(id.to_string())
+                .bind(&now)
+                .bind(&now)
+                .bind(id.to_string())
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected()
+                    == 1
+            }
+            // 완료를 벗어나면 아직 밀어내지 않은 완료 명령을 취소한다. 안 그러면
+            // 워커가 뒤늦게 그 행을 밀어 Linear 이슈를 닫아버린다.
+            Some(_) => {
+                cancel_pending_completion(&mut transaction, id).await?;
+                false
+            }
+            None => false,
         };
         let todo = fetch_todo_row(id, &mut transaction).await?.try_into()?;
         transaction.commit().await?;
@@ -635,6 +644,24 @@ fn fts_match_expression(input: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" "),
     )
+}
+
+/// 완료를 되돌릴 때, 아직 밀어내지 않은 linear_complete 아웃박스 행을 지운다.
+/// 워커가 뒤늦게 그 행을 밀어 Linear 이슈를 닫는 것을 막는다. 이미 밀어낸
+/// (completed_at 이 찍힌) 행은 건드리지 않는다. 그 이슈는 이미 Linear 에서
+/// 닫혔고, 되살리는 것은 이 취소의 몫이 아니다.
+async fn cancel_pending_completion(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    id: TodoId,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM sync_outbox \
+         WHERE todo_id = ? AND kind = 'linear_complete' AND completed_at IS NULL",
+    )
+    .bind(id.to_string())
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
 }
 
 async fn fetch_todo_row(

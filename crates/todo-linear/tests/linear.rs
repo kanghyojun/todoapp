@@ -402,6 +402,59 @@ async fn worker_resolves_single_done_state_pushes_and_updates_link() {
     assert_eq!(last_status.as_deref(), Some("done"));
 }
 
+/// 취소를 놓친 레이스를 대비한 방어층. 아웃박스에 pending linear_complete 가
+/// 남아 있어도, push 직전에 todo 가 더 이상 완료가 아니면 이슈를 닫지 않는다.
+#[tokio::test]
+async fn process_outbox_skips_when_todo_left_done_before_push() {
+    let harness = Harness::configured().await;
+    let todo = harness.create_linked("skip-1", "team-1").await;
+    // 완료를 거치지 않은(=todo 상태인) 항목에 pending 행을 강제로 심어,
+    // 취소가 누락된 상황을 재현한다.
+    sqlx::query(
+        "INSERT INTO sync_outbox (todo_id, kind, next_attempt_at, created_at) \
+         VALUES (?, 'linear_complete', ?, ?)",
+    )
+    .bind(todo.id.to_string())
+    .bind("2000-01-01T00:00:00Z")
+    .bind("2000-01-01T00:00:00Z")
+    .execute(harness.core.pool())
+    .await
+    .expect("plant stale outbox row");
+    harness
+        .mount_graphql("CompletedStates", json!({ "data": { "workflowStates": { "nodes": [{ "id": "done-state", "name": "Done" }] } } }))
+        .await;
+    harness
+        .mount_graphql(
+            "CompleteIssue",
+            json!({ "data": { "issueUpdate": { "success": true } } }),
+        )
+        .await;
+
+    let result = harness
+        .service
+        .process_outbox_once()
+        .await
+        .expect("process outbox");
+
+    // 이슈를 닫지 않았다.
+    assert_eq!(result.pushed, 0);
+    let last_status = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT last_pushed_status FROM linear_links WHERE todo_id = ?",
+    )
+    .bind(todo.id.to_string())
+    .fetch_one(harness.core.pool())
+    .await
+    .expect("read pushed status");
+    assert_eq!(last_status, None);
+    // stale 행은 다시 시도되지 않게 정리한다.
+    let pending =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sync_outbox WHERE completed_at IS NULL")
+            .fetch_one(harness.core.pool())
+            .await
+            .expect("count pending");
+    assert_eq!(pending, 0);
+}
+
 #[tokio::test]
 async fn multiple_done_states_wait_for_choice_then_push() {
     let harness = Harness::configured().await;
