@@ -1,4 +1,9 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chrono::{SecondsFormat, TimeDelta, Utc};
 use reqwest::StatusCode;
@@ -61,6 +66,10 @@ pub struct LinearService {
     client: reqwest::Client,
     endpoint: String,
     keys: Arc<dyn KeyStore>,
+    // 키체인은 서명 안 된 개발 빌드에서 읽을 때마다 프롬프트를 띄운다. 프로세스
+    // 수명 동안 한 번만 읽고 메모리에 둔다. 바깥 Option = 아직 안 읽음, 안쪽
+    // Option = 키 값(None 은 키 없음). set/delete 가 이 값을 갱신한다.
+    key_cache: Arc<Mutex<Option<Option<String>>>>,
     needs_choice: Arc<RwLock<HashMap<String, Vec<WorkflowState>>>>,
 }
 
@@ -79,6 +88,7 @@ impl LinearService {
             client: reqwest::Client::new(),
             endpoint: endpoint.into(),
             keys,
+            key_cache: Arc::new(Mutex::new(None)),
             needs_choice: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -89,8 +99,10 @@ impl LinearService {
         }
         let viewer: ViewerData = self.graphql(api_key, VIEWER_QUERY, json!({})).await?;
         self.keys.set(api_key)?;
+        self.store_key_cache(Some(api_key.to_owned()));
         if let Err(error) = set_setting(&self.core, "linear.viewer_id", &viewer.viewer.id).await {
             let _ = self.keys.delete();
+            self.store_key_cache(None);
             return Err(error);
         }
         Ok(())
@@ -98,6 +110,7 @@ impl LinearService {
 
     pub async fn delete_api_key(&self) -> Result<(), Error> {
         self.keys.delete()?;
+        self.store_key_cache(None);
         sqlx::query("DELETE FROM settings WHERE key = 'linear.viewer_id'")
             .execute(self.core.pool())
             .await?;
@@ -105,11 +118,27 @@ impl LinearService {
         Ok(())
     }
 
+    /// 키체인을 프로세스당 한 번만 읽고 캐시한다. 성공(Ok)만 캐시한다. 실패는
+    /// 캐시하지 않아 잠금이 풀리면 다음 호출에서 다시 시도한다.
+    fn cached_key(&self) -> Result<Option<String>, KeyStoreError> {
+        if let Some(cached) = self.key_cache.lock().unwrap().as_ref() {
+            return Ok(cached.clone());
+        }
+        let value = self.keys.get()?;
+        *self.key_cache.lock().unwrap() = Some(value.clone());
+        Ok(value)
+    }
+
+    /// 키를 넣거나 지운 뒤 캐시를 그 값으로 맞춘다.
+    fn store_key_cache(&self, value: Option<String>) {
+        *self.key_cache.lock().unwrap() = Some(value);
+    }
+
     /// 키를 읽을 수 없는 상황은 키가 없는 것과 같이 다룬다.
     /// 키체인이 없는 기기(헤드리스 리눅스)나 잠긴 키체인에서 조회가 실패하는데,
     /// 그걸 500 으로 올리면 "Linear 를 쓰고 있냐"는 질문조차 답할 수 없다.
     fn read_key(&self) -> Option<String> {
-        self.keys.get().ok().flatten()
+        self.cached_key().ok().flatten()
     }
 
     pub fn is_configured(&self) -> bool {
@@ -118,7 +147,7 @@ impl LinearService {
 
     /// 키체인 자체를 열 수 있는지. `is_configured` 가 false 일 때 이유를 가른다.
     pub fn key_store_available(&self) -> bool {
-        self.keys.get().is_ok()
+        self.cached_key().is_ok()
     }
 
     pub async fn link(&self, todo_id: TodoId, issue_ref: &str) -> Result<(), Error> {
@@ -176,9 +205,9 @@ impl LinearService {
     }
 
     pub async fn process_outbox_once(&self) -> Result<WorkerSummary, Error> {
-        let Some(key) = self.keys.get()? else {
-            return Ok(WorkerSummary::default());
-        };
+        // 일감을 먼저 확인한다. 아웃박스가 비면 키체인을 아예 열지 않는다.
+        // 이 워커가 5초마다 돌면서 키를 먼저 읽던 것이, 서명 안 된 개발 빌드에서
+        // 유휴 상태에도 키체인 프롬프트가 쏟아지던 원인이었다.
         let rows = sqlx::query_as::<_, OutboxRow>(
             "SELECT o.id, o.attempts, l.issue_id, l.team_id \
              FROM sync_outbox o JOIN linear_links l ON l.todo_id = o.todo_id \
@@ -188,6 +217,12 @@ impl LinearService {
         .bind(now_string())
         .fetch_all(self.core.pool())
         .await?;
+        if rows.is_empty() {
+            return Ok(WorkerSummary::default());
+        }
+        let Some(key) = self.cached_key()? else {
+            return Ok(WorkerSummary::default());
+        };
         let mut summary = WorkerSummary::default();
         for row in rows {
             match self.process_outbox_row(&key, &row).await {

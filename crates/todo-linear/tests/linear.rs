@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
@@ -27,6 +28,46 @@ impl MemoryKeyStore {
 
 impl KeyStore for MemoryKeyStore {
     fn get(&self) -> Result<Option<String>, KeyStoreError> {
+        self.value
+            .lock()
+            .map_err(|_| KeyStoreError)
+            .map(|v| v.clone())
+    }
+
+    fn set(&self, value: &str) -> Result<(), KeyStoreError> {
+        *self.value.lock().map_err(|_| KeyStoreError)? = Some(value.to_owned());
+        Ok(())
+    }
+
+    fn delete(&self) -> Result<(), KeyStoreError> {
+        *self.value.lock().map_err(|_| KeyStoreError)? = None;
+        Ok(())
+    }
+}
+
+/// 키체인 읽기 횟수를 세는 KeyStore. 서명 안 된 개발 빌드에서는 읽을 때마다
+/// 프롬프트가 뜨므로, "얼마나 자주 읽느냐"가 곧 프롬프트 횟수다.
+struct CountingKeyStore {
+    value: Mutex<Option<String>>,
+    reads: AtomicUsize,
+}
+
+impl CountingKeyStore {
+    fn configured() -> Self {
+        Self {
+            value: Mutex::new(Some(API_KEY.to_owned())),
+            reads: AtomicUsize::new(0),
+        }
+    }
+
+    fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+impl KeyStore for CountingKeyStore {
+    fn get(&self) -> Result<Option<String>, KeyStoreError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         self.value
             .lock()
             .map_err(|_| KeyStoreError)
@@ -671,4 +712,31 @@ fn link_input(issue_id: &str, team_id: &str) -> LinearLinkInput {
         url: format!("https://linear.app/acme/issue/PI-{issue_id}/slug"),
         team_id: team_id.to_owned(),
     }
+}
+
+#[tokio::test]
+async fn idle_worker_does_not_read_keychain() {
+    let keys = Arc::new(CountingKeyStore::configured());
+    let harness = Harness::new(keys.clone()).await;
+    // 아웃박스가 비어 있다. 밀 게 없으면 키체인을 아예 열지 않아야 한다.
+    let summary = harness.service.process_outbox_once().await.unwrap();
+    assert_eq!(summary.pushed, 0);
+    assert_eq!(
+        keys.reads(),
+        0,
+        "빈 아웃박스는 키체인을 읽지 않아야 한다(5초 주기 프롬프트의 원인)"
+    );
+}
+
+#[tokio::test]
+async fn repeated_key_reads_hit_cache() {
+    let keys = Arc::new(CountingKeyStore::configured());
+    let harness = Harness::new(keys.clone()).await;
+    // status 한 번이 is_configured + key_store_available 로 두 번 읽던 것을
+    // 메모리 캐시로 접는다. 여러 번 물어도 키체인은 딱 한 번만 읽어야 한다.
+    for _ in 0..5 {
+        assert!(harness.service.is_configured());
+        assert!(harness.service.key_store_available());
+    }
+    assert_eq!(keys.reads(), 1, "키는 한 번만 읽고 메모리에 캐시해야 한다");
 }
