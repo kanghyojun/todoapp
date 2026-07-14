@@ -1174,7 +1174,12 @@ export const App: Component<AppProps> = (props) => {
                           <span class="row-marker" aria-hidden="true">
                             {selectedIds().includes(todo.id) ? "◆" : cursorIndex() === index() ? "›" : "·"}
                           </span>
-                          <span class="todo-title">{todo.title}</span>
+                          <span class="todo-title">
+                            <span class="todo-code" aria-label={`코드 ${todo.code}`}>
+                              #{todo.code}
+                            </span>{" "}
+                            {todo.title}
+                          </span>
                           <span class={`priority priority-${todo.priority}`}>
                             {PRIORITY_LABELS[todo.priority]}
                           </span>
@@ -1263,7 +1268,7 @@ export const App: Component<AppProps> = (props) => {
           {(todo) => (
             <>
               <div class="panel-header">
-                <span>DETAIL</span><kbd>Esc</kbd>
+                <span>DETAIL · #{todo().code}</span><kbd>Esc</kbd>
               </div>
               <h1 id="detail-heading">{todo().title}</h1>
               <div class="detail-body">

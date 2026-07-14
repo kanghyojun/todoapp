@@ -24,6 +24,8 @@ export interface LinearStatus {
 
 export interface Todo {
   id: string;
+  /** 사람이 부르는 짧은 코드(4글자). 화면에는 #code 로 보인다. */
+  code: string;
   title: string;
   description: string;
   status: Status;

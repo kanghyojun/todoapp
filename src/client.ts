@@ -96,6 +96,7 @@ function decodeTodo(value: unknown): Todo {
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
+    typeof value.code !== "string" ||
     typeof value.title !== "string" ||
     typeof value.description !== "string" ||
     !STATUSES.includes(value.status as Status) ||
@@ -113,6 +114,7 @@ function decodeTodo(value: unknown): Todo {
   }
   return {
     id: value.id,
+    code: value.code,
     title: value.title,
     description: value.description,
     status: value.status as Status,

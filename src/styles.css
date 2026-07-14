@@ -262,6 +262,13 @@ button.todo-row { cursor: pointer; }
   font-size: 13px;
 }
 
+.todo-code {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
 .priority,
 .status,
 .todo-row time {

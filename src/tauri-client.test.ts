@@ -3,6 +3,7 @@ import { NotFoundError, TauriClient, type InvokeFn, type ListenFn } from "./clie
 
 const TODO = {
   id: "0197f000-0000-7000-8000-000000000001",
+  code: "wx9k",
   title: "Ship M4",
   description: "",
   status: "todo",

@@ -3,6 +3,7 @@ import { HttpClient, NotFoundError } from "./client";
 
 const TODO = {
   id: "0197f000-0000-7000-8000-000000000001",
+  code: "ab3c",
   title: "Ship M3",
   description: "",
   status: "todo",
