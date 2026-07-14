@@ -4982,6 +4982,7 @@ name = "todo-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "rand 0.9.4",
  "serde",
  "sqlx",
  "thiserror 2.0.18",
