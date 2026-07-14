@@ -101,10 +101,14 @@ impl TodoMcp {
 #[tool_router]
 impl TodoMcp {
     #[tool(
-        description = "List active todos. Optional status is todo|in_progress|done; priority is always the string none|urgent|high|medium|low; due_before uses YYYY-MM-DD; query performs full-text search. Deleted todos are excluded."
+        description = "List active todos. Optional status is todo|in_progress|done; priority is always the string none|urgent|high|medium|low; due_before uses YYYY-MM-DD; query performs full-text search. Deleted todos are excluded. Returns an object with a `todos` array."
     )]
     async fn todo_list(&self, Parameters(request): Parameters<McpListRequest>) -> CallToolResult {
-        into_tool_result(self.list(request).await)
+        into_tool_result(
+            self.list(request)
+                .await
+                .map(|todos| json!({ "todos": todos })),
+        )
     }
 
     #[tool(

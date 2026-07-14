@@ -76,13 +76,30 @@ claude mcp add --transport http todo http://127.0.0.1:2470/mcp \
 
 도구 아홉 개를 노출합니다. `todo_list`, `todo_get`, `todo_create`, `todo_update`, `todo_set_status`, `todo_delete`, `todo_restore`, `todo_link_linear`, `linear_pull_in_progress`.
 
+### 다른 기기에서 붙기 (Tailscale)
+
+기본은 `127.0.0.1` 바인딩이라 같은 기기에서만 붙습니다. Tailscale로 연결된 리눅스 서버 같은 다른 기기에서 붙이려면 바인드 주소를 바꿉니다. 토큰과 같은 폴더의 `~/.config/todo/config.json`:
+
+```json
+{ "bind": "100.92.89.75" }
+```
+
+앱을 다시 켜면 그 주소에 바인딩되고, `<주소>:2470`이 Host 화이트리스트에 자동으로 들어갑니다. 그다음 리눅스에서 등록합니다.
+
+```bash
+claude mcp add --transport http todo http://100.92.89.75:2470/mcp \
+  --header "Authorization: Bearer <맥의 ~/.config/todo/token 값>"
+```
+
+`todo-server` 바이너리는 `--bind 100.92.89.75` 플래그로 같은 일을 합니다. 바인드는 Tailscale IP처럼 특정 인터페이스로 좁히십시오. `0.0.0.0`은 LAN 전체에 노출됩니다.
+
 우선순위는 언제나 문자열입니다. `none`, `urgent`, `high`, `medium`, `low`. 마감일은 쓰기에서 자연어를 받습니다. `tomorrow`, `fri`, `3d`, `2026-04-20`, 그리고 빈 문자열은 지우기입니다.
 
 ## 보안
 
 REST와 MCP는 `127.0.0.1`에만 바인딩됩니다. 그것만으로는 부족합니다. 아무 웹페이지나 `fetch('http://127.0.0.1:2470/...')`를 던질 수 있습니다. 세 겹으로 막습니다.
 
-1. `127.0.0.1` 바인딩
+1. `127.0.0.1` 바인딩(기본). `config.json`으로 넓히면 그 주소만 Host 화이트리스트에 더해집니다.
 2. `~/.config/todo/token`(0600)의 Bearer 토큰. `GET /api/v1/health`만 예외입니다. 비교는 상수 시간입니다.
 3. `Host`와 `Origin` 검증
 

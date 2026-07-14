@@ -20,8 +20,8 @@ use todo_gmail::{
 };
 use todo_linear::{Error as LinearError, LinearService, LinearStatus, PullSummary, SystemKeyStore};
 use todo_server::{
-    ServerConfig, StartupError, bind, build_router_with_linear, default_token_path,
-    load_or_create_token, serve,
+    ServerConfig, StartupError, bind, build_router_with_linear, default_config_path,
+    default_token_path, load_or_create_token, read_bind_config, serve,
 };
 
 const SERVER_PORT: u16 = 2470;
@@ -667,18 +667,20 @@ async fn initialize(app: tauri::AppHandle) -> Result<ShellState, Box<dyn StdErro
     gmail.spawn_workers();
 
     let home = app.path().home_dir()?;
+    let bind_addr = read_bind_config(&default_config_path(&home));
     let token = load_or_create_token(&default_token_path(&home))?;
     let router = build_router_with_linear(
         core.clone(),
         linear.clone(),
         ServerConfig {
+            bind: bind_addr,
             port: SERVER_PORT,
             token,
             dev_origins: Vec::new(),
         },
     )?;
 
-    let server_status = match bind(SERVER_PORT).await {
+    let server_status = match bind(bind_addr, SERVER_PORT).await {
         Ok(listener) => {
             let status = SharedServerStatus::new(ServerStatus::running());
             let task_status = status.clone();
@@ -764,7 +766,7 @@ async fn refresh_dock_badge(app: &tauri::AppHandle, gmail: &GmailService) {
 
 fn server_startup_message(error: &StartupError) -> String {
     match error {
-        StartupError::PortInUse { port } => format!("{port} 포트가 사용 중입니다"),
+        StartupError::PortInUse { port, .. } => format!("{port} 포트가 사용 중입니다"),
         _ => error.to_string(),
     }
 }

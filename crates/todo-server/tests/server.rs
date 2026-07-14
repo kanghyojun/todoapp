@@ -1,5 +1,6 @@
 use std::{
     fs,
+    net::{IpAddr, Ipv4Addr},
     os::unix::fs::PermissionsExt,
     path::Path,
     process::Command,
@@ -55,7 +56,12 @@ impl KeyStore for MemoryKeyStore {
 
 impl TestServer {
     async fn start(dev_origins: Vec<String>) -> Self {
+        Self::start_with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST), dev_origins).await
+    }
+
+    async fn start_with_bind(bind: IpAddr, dev_origins: Vec<String>) -> Self {
         Self::start_with_linear(
+            bind,
             dev_origins,
             Arc::new(MemoryKeyStore::default()),
             "http://127.0.0.1:1/graphql".to_owned(),
@@ -64,6 +70,7 @@ impl TestServer {
     }
 
     async fn start_with_linear(
+        bind: IpAddr,
         dev_origins: Vec<String>,
         keys: Arc<dyn KeyStore>,
         endpoint: String,
@@ -82,6 +89,7 @@ impl TestServer {
             core.clone(),
             linear.clone(),
             ServerConfig {
+                bind,
                 port: address.port(),
                 token: TOKEN.to_owned(),
                 dev_origins,
@@ -209,6 +217,36 @@ async fn authentication_health_host_origin_and_cors_are_enforced() {
             .expect("CORS origin header"),
         "http://localhost:2471"
     );
+}
+
+#[tokio::test]
+async fn non_loopback_bind_admits_its_own_host_but_still_blocks_strangers() {
+    let bind = IpAddr::V4(Ipv4Addr::new(100, 92, 89, 75));
+    let server = TestServer::start_with_bind(bind, Vec::new()).await;
+    let port = server
+        .base_url
+        .rsplit(':')
+        .next()
+        .expect("port in base url");
+    let tailnet_host = format!("100.92.89.75:{port}");
+
+    // Tailscale IP 로 바인딩했으면 그 host 로 온 요청이 통과해야 한다.
+    let admitted = server
+        .authorized(server.client.get(server.url("/api/v1/todos")))
+        .header(header::HOST, &tailnet_host)
+        .send()
+        .await
+        .expect("tailnet host request");
+    assert_eq!(admitted.status(), StatusCode::OK);
+
+    // 그래도 낯선 host 는 여전히 막아야 한다.
+    let foreign = server
+        .authorized(server.client.get(server.url("/api/v1/todos")))
+        .header(header::HOST, "evil.example")
+        .send()
+        .await
+        .expect("foreign host request");
+    assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -438,6 +476,7 @@ async fn rest_crud_dates_priority_soft_delete_search_and_unconfigured_linear_wor
 async fn linear_rest_and_mcp_routes_validate_link_pull_and_resolve_done_choice() {
     let mock = MockServer::start().await;
     let server = TestServer::start_with_linear(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
         Vec::new(),
         Arc::new(MemoryKeyStore::default()),
         format!("{}/graphql", mock.uri()),
@@ -876,6 +915,39 @@ async fn mcp_lists_nine_tools_and_shares_the_core_with_rest() {
             .expect("MCP link error text")
             .contains("linear_not_configured")
     );
+}
+
+#[tokio::test]
+async fn mcp_todo_list_returns_a_structured_object_not_a_bare_array() {
+    let server = TestServer::start(Vec::new()).await;
+    server
+        .mcp(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "todo_create", "arguments": { "title": "list target" } }
+        }))
+        .await;
+
+    let listed: Value = server
+        .mcp(json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "todo_list", "arguments": {} }
+        }))
+        .await
+        .json()
+        .await
+        .expect("decode MCP list");
+
+    assert_eq!(listed["result"]["isError"], false);
+    // structuredContent 는 객체여야 한다. 배열이면 하네스가 malformed 로 막는다.
+    assert!(
+        listed["result"]["structuredContent"].is_object(),
+        "structuredContent must be an object, got {}",
+        listed["result"]["structuredContent"]
+    );
+    let todos = &listed["result"]["structuredContent"]["todos"];
+    assert!(todos.is_array(), "todos must be an array");
+    assert_eq!(todos.as_array().expect("todos array").len(), 1);
+    assert_eq!(todos[0]["title"], "list target");
 }
 
 #[test]

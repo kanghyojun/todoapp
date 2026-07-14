@@ -1,10 +1,11 @@
+mod config;
 mod dto;
 mod error;
 mod mcp;
 mod rest;
 mod security;
 
-use std::{io, path::PathBuf};
+use std::{io, net::IpAddr, path::PathBuf};
 
 use axum::{
     Router,
@@ -20,10 +21,12 @@ use todo_core::{Error as CoreError, TodoCore};
 use todo_linear::LinearService;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+pub use config::{default_config_path, read_bind_config};
 pub use security::{default_token_path, load_or_create_token};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
+    pub bind: IpAddr,
     pub port: u16,
     pub token: String,
     pub dev_origins: Vec<String>,
@@ -44,10 +47,11 @@ pub enum StartupError {
     InvalidOrigin(String),
     #[error("failed to initialize the todo database: {0}")]
     Database(#[from] CoreError),
-    #[error("port {port} on 127.0.0.1 is already in use")]
-    PortInUse { port: u16 },
-    #[error("cannot bind 127.0.0.1:{port}: {source}")]
+    #[error("port {port} on {bind} is already in use")]
+    PortInUse { bind: IpAddr, port: u16 },
+    #[error("cannot bind {bind}:{port}: {source}")]
     Bind {
+        bind: IpAddr,
         port: u16,
         #[source]
         source: io::Error,
@@ -63,10 +67,7 @@ pub fn build_router_with_linear(
     linear: LinearService,
     config: ServerConfig,
 ) -> Result<Router, StartupError> {
-    let allowed_hosts = vec![
-        format!("127.0.0.1:{}", config.port),
-        format!("localhost:{}", config.port),
-    ];
+    let allowed_hosts = allowed_hosts_for(config.bind, config.port);
     let mut allowed_origins = vec![
         format!("http://127.0.0.1:{}", config.port),
         format!("http://localhost:{}", config.port),
@@ -123,13 +124,13 @@ pub fn build_router_with_linear(
     )))
 }
 
-pub async fn bind(port: u16) -> Result<tokio::net::TcpListener, StartupError> {
-    match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+pub async fn bind(bind: IpAddr, port: u16) -> Result<tokio::net::TcpListener, StartupError> {
+    match tokio::net::TcpListener::bind((bind, port)).await {
         Ok(listener) => Ok(listener),
         Err(source) if source.kind() == io::ErrorKind::AddrInUse => {
-            Err(StartupError::PortInUse { port })
+            Err(StartupError::PortInUse { bind, port })
         }
-        Err(source) => Err(StartupError::Bind { port, source }),
+        Err(source) => Err(StartupError::Bind { bind, port, source }),
     }
 }
 
@@ -148,4 +149,36 @@ fn validate_origin(origin: &str) -> Result<(), StartupError> {
         return Err(StartupError::InvalidOrigin(origin.to_owned()));
     }
     Ok(())
+}
+
+/// 로컬 루프백은 언제나 허용한다. 바인드 주소가 루프백이 아니면(예: Tailscale IP)
+/// 그 `<주소>:<포트>`도 Host 화이트리스트에 넣는다. 그래야 원격에서 붙을 수 있다.
+fn allowed_hosts_for(bind: IpAddr, port: u16) -> Vec<String> {
+    let mut hosts = vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    if !bind.is_loopback() {
+        hosts.push(format!("{bind}:{port}"));
+    }
+    hosts
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use super::allowed_hosts_for;
+
+    #[test]
+    fn loopback_bind_allows_only_local_hosts() {
+        let hosts = allowed_hosts_for(IpAddr::V4(Ipv4Addr::LOCALHOST), 2470);
+        assert_eq!(hosts, vec!["127.0.0.1:2470", "localhost:2470"]);
+    }
+
+    #[test]
+    fn non_loopback_bind_also_allows_its_own_host() {
+        let bind = IpAddr::V4(Ipv4Addr::new(100, 92, 89, 75));
+        let hosts = allowed_hosts_for(bind, 2470);
+        assert!(hosts.contains(&"127.0.0.1:2470".to_owned()));
+        assert!(hosts.contains(&"localhost:2470".to_owned()));
+        assert!(hosts.contains(&"100.92.89.75:2470".to_owned()));
+    }
 }
