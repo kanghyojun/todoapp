@@ -116,26 +116,46 @@ const ACTION_EDITOR: Partial<Record<InputMode, { label: string; placeholder: str
   defer: { label: "보류까지", placeholder: "next week, 3d, 또는 비우면 계속 보류" },
 };
 
-const SHORTCUTS: readonly [string, string][] = [
+// 도움말은 보고 있는 탭에 맞춰 보여준다. 같은 키가 탭마다 뜻이 다르므로
+// (t=마감일 vs 할 일로, u=되돌리기 vs 읽음, e=제목편집 vs 보관, ⌘1~3=필터 vs
+// 폴더) 한데 섞지 않고 공통 + 현재 탭 섹션만 보인다.
+type ShortcutGroup = { title: string; items: readonly [string, string][] };
+
+const GLOBAL_SHORTCUTS: readonly [string, string][] = [
+  ["⌘K / Ctrl+K", "커맨드 팔레트"],
+  ["[ / ]", "이전 / 다음 탭"],
+  ["?", "단축키 도움말"],
+  ["Esc", "닫기 · 취소 · 선택 해제"],
+];
+
+const TODO_SHORTCUTS: readonly [string, string][] = [
   ["j / k", "아래 / 위로 이동"],
-  ["Enter / Esc", "상세 열기 / 닫기·취소·선택 해제"],
-  ["c", "새 할 일. Shift+Enter로 연속 생성"],
+  ["Enter", "상세 열기"],
+  ["c", "새 할 일 (⇧Enter 연속 생성)"],
   ["e", "제목 편집"],
-  ["E", "설명 편집 (⌘Enter 저장, Esc 취소)"],
+  ["E", "설명 편집 (⌘Enter 저장)"],
   ["d / i", "완료 / 진행 중 토글"],
-  ["s", "보류 토글 (복귀일 입력, 비우면 계속 보류)"],
+  ["s", "보류 토글 (복귀일, 비우면 계속 보류)"],
   ["p u·h·m·l·n", "우선순위 지정"],
   ["t", "마감일 입력"],
   ["x", "선택 토글"],
   ["Backspace", "삭제"],
-  ["l / o", "Linear 이슈 연결 / 열기"],
+  ["l / o", "Linear 연결 / 열기 (없으면 이메일)"],
   ["⌘1 / ⌘2 / ⌘3 / ⌘4", "할 일 / 진행 중 / 완료 / 전체 필터"],
-  ["[ / ]", "이전 / 다음 탭"],
   ["g", "보류 레인 펼치기·접기"],
   ["/", "검색"],
   ["u", "되돌리기"],
-  ["⌘K / Ctrl+K", "커맨드 팔레트"],
-  ["?", "단축키 도움말"],
+];
+
+const MAIL_SHORTCUTS: readonly [string, string][] = [
+  ["j / k", "아래 / 위로 이동"],
+  ["Enter", "메일 열기"],
+  ["t", "할 일로 만들기"],
+  ["e", "보관"],
+  ["u", "읽음 / 안읽음 토글"],
+  ["a", "계정 전환"],
+  ["/", "검색"],
+  ["⌘1 / ⌘2 / ⌘3", "inbox / archive / all 폴더"],
 ];
 
 function messageFrom(error: unknown): string {
@@ -231,6 +251,14 @@ export const App: Component<AppProps> = (props) => {
       ...paletteTodos().map((todo): PaletteItem => ({ kind: "todo", todo })),
     ];
   });
+
+  // 공통 + 현재 탭 섹션. mail 탭은 gmailClient 가 있을 때만 열리므로 안전하다.
+  const helpGroups = createMemo<ShortcutGroup[]>(() => [
+    { title: "공통", items: GLOBAL_SHORTCUTS },
+    activeTab() === "mail"
+      ? { title: "메일", items: MAIL_SHORTCUTS }
+      : { title: "할 일", items: TODO_SHORTCUTS },
+  ]);
 
   async function refreshLinearStatus(): Promise<void> {
     try {
@@ -1405,12 +1433,24 @@ export const App: Component<AppProps> = (props) => {
           if (event.target === event.currentTarget) closeOverlay();
         }}>
           <section class="help-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcut-heading">
-            <div class="panel-header"><span id="shortcut-heading">SHORTCUTS</span><kbd>Esc</kbd></div>
-            <dl>
-              <For each={SHORTCUTS}>
-                {([key, label]) => <div><dt>{key}</dt><dd>{label}</dd></div>}
-              </For>
-            </dl>
+            <div class="panel-header">
+              <span id="shortcut-heading">
+                SHORTCUTS · {activeTab() === "mail" ? "메일" : "할 일"}
+              </span>
+              <kbd>Esc</kbd>
+            </div>
+            <For each={helpGroups()}>
+              {(group) => (
+                <div class="help-group">
+                  <h2 class="help-group-title">{group.title}</h2>
+                  <dl>
+                    <For each={group.items}>
+                      {([key, label]) => <div><dt>{key}</dt><dd>{label}</dd></div>}
+                    </For>
+                  </dl>
+                </div>
+              )}
+            </For>
           </section>
         </div>
       </Show>

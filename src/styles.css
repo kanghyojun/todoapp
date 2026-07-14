@@ -521,7 +521,16 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .palette-empty { padding: 18px 10px; color: var(--muted); }
 
 .help-dialog { padding: 18px 22px 22px; }
-.help-dialog dl { column-count: 2; column-gap: 28px; }
+.help-dialog .help-group-title {
+  margin: 20px 0 0;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.help-dialog .help-group:first-of-type .help-group-title { margin-top: 10px; }
+.help-dialog .help-group dl { margin-top: 10px; column-count: 2; column-gap: 28px; }
 .help-dialog dl div { break-inside: avoid; grid-template-columns: 130px 1fr; font-size: 12px; }
 
 .toast {
@@ -585,6 +594,12 @@ dd { margin: 0; overflow-wrap: anywhere; }
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem;
+}
+
+/* 폴더 칩(.filter-row)은 할 일 화면용 margin-bottom 을 물려받는다. 툴바 안에서는
+   그 여백이 폴더 줄만 위로 밀어 계정·버튼 줄과 어긋나므로 여기선 없앤다. */
+.mail-toolbar .filter-row {
+  margin-bottom: 0;
 }
 
 .mail-account-filter {
