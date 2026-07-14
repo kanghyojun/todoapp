@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tempfile::NamedTempFile;
 use todo_core::{EmailLinkInput, TodoCore};
 use todo_gmail::{GmailService, MailFilter, MailFolder, TokenStore, TokenStoreError};
-use wiremock::matchers::{body_string_contains, method, path};
+use wiremock::matchers::{body_string_contains, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[derive(Default)]
@@ -317,6 +317,197 @@ async fn incremental_sync_applies_label_removal() {
 
     harness.service.sync_account(&account.id).await.unwrap();
     assert_eq!(in_inbox_flag(&harness.core, &account.id, "m1").await, 0);
+
+    let refreshed = todo_gmail::store::fetch_account(harness.core.pool(), &account.id)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.history_id.as_deref(), Some("101"));
+}
+
+// 회귀: history 의 messagesAdded 에 추가됐다 삭제된 메일(fetch 시 404)이 끼어 있어도
+// 그 한 건만 건너뛰고 나머지를 처리하며 history_id 를 전진시켜야 한다. 404 에서 통째로
+// 중단되면 history_id 가 고정돼 그 계정은 이후 새 메일을 영영 못 받는다(sync 교착).
+#[tokio::test]
+async fn incremental_sync_skips_deleted_message_and_advances_history() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    set_account_history(&harness.core, &account.id, "100").await;
+    mount_token(&harness.mock).await;
+
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "history": [
+                { "id": "100", "messagesAdded": [
+                    { "message": { "id": "gone" } },
+                    { "message": { "id": "kept" } }
+                ] }
+            ],
+            "historyId": "101"
+        })))
+        .mount(&harness.mock)
+        .await;
+    // 추가됐다 삭제된 메일: fetch 하면 404.
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages/gone"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&harness.mock)
+        .await;
+    // 정상 새 메일.
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages/kept"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "kept", "threadId": "t1", "labelIds": ["INBOX"],
+            "snippet": "s", "internalDate": "1700000000002",
+            "payload": { "headers": [ { "name": "Subject", "value": "kept subject" } ] }
+        })))
+        .mount(&harness.mock)
+        .await;
+
+    harness.service.sync_account(&account.id).await.unwrap();
+
+    // 정상 메일은 저장되고, 삭제된 메일은 저장되지 않는다.
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND gmail_id = 'kept'",
+    )
+    .bind(&account.id)
+    .fetch_one(harness.core.pool())
+    .await
+    .unwrap();
+    assert_eq!(kept, 1, "삭제된 메일을 건너뛰고 정상 메일은 저장해야 한다");
+
+    // history_id 가 전진해 교착이 풀렸다.
+    let refreshed = todo_gmail::store::fetch_account(harness.core.pool(), &account.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        refreshed.history_id.as_deref(),
+        Some("101"),
+        "404 한 건 때문에 history_id 가 고정되면 안 된다"
+    );
+}
+
+// 회귀: initial_sync(백필)도 목록에 오른 메일이 fetch 시 404 면 그 한 건만 건너뛰고
+// 나머지를 저장해야 한다. 백필 도중 404 로 중단되면 계정 첫 동기화가 통째로 실패한다.
+#[tokio::test]
+async fn initial_sync_skips_deleted_message_and_continues() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    mount_token(&harness.mock).await;
+
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "messages": [ { "id": "gone", "threadId": "t1" }, { "id": "kept", "threadId": "t2" } ],
+            "resultSizeEstimate": 2
+        })))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages/gone"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/messages/kept"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "kept", "threadId": "t2", "labelIds": ["INBOX"],
+            "snippet": "s", "internalDate": "1700000000003",
+            "payload": { "headers": [ { "name": "Subject", "value": "kept" } ] }
+        })))
+        .mount(&harness.mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "emailAddress": "me@x.com", "historyId": "999"
+        })))
+        .mount(&harness.mock)
+        .await;
+
+    harness.service.sync_account(&account.id).await.unwrap();
+
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND gmail_id = 'kept'",
+    )
+    .bind(&account.id)
+    .fetch_one(harness.core.pool())
+    .await
+    .unwrap();
+    assert_eq!(kept, 1, "백필 중 404 를 건너뛰고 정상 메일은 저장해야 한다");
+
+    let refreshed = todo_gmail::store::fetch_account(harness.core.pool(), &account.id)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.history_id.as_deref(), Some("999"));
+}
+
+// 회귀: history 응답이 nextPageToken 으로 페이지가 나뉘면 모든 페이지를 따라가
+// 변경분을 빠짐없이 처리해야 한다. 첫 페이지만 읽고 최신 historyId 로 점프하면
+// 2 페이지 이후 변경분(밀린 메일)을 영구히 잃는다.
+#[tokio::test]
+async fn incremental_sync_follows_pagination() {
+    let harness = harness().await;
+    let account = todo_gmail::store::insert_account(harness.core.pool(), "me@x.com")
+        .await
+        .unwrap();
+    harness.tokens.set("me@x.com", "rt-1").unwrap();
+    set_account_history(&harness.core, &account.id, "100").await;
+    mount_token(&harness.mock).await;
+
+    // 1 페이지: pageToken 없는 요청. nextPageToken 을 준다.
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/history"))
+        .and(query_param_is_missing("pageToken"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "history": [
+                { "id": "100", "messagesAdded": [ { "message": { "id": "p1" } } ] }
+            ],
+            "nextPageToken": "PAGE2",
+            "historyId": "101"
+        })))
+        .mount(&harness.mock)
+        .await;
+    // 2 페이지: pageToken=PAGE2. 마지막 페이지.
+    Mock::given(method("GET"))
+        .and(path("/gmail/v1/users/me/history"))
+        .and(query_param("pageToken", "PAGE2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "history": [
+                { "id": "101", "messagesAdded": [ { "message": { "id": "p2" } } ] }
+            ],
+            "historyId": "101"
+        })))
+        .mount(&harness.mock)
+        .await;
+    for id in ["p1", "p2"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/gmail/v1/users/me/messages/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": id, "threadId": "t1", "labelIds": ["INBOX"],
+                "snippet": "s", "internalDate": "1700000000004",
+                "payload": { "headers": [ { "name": "Subject", "value": id } ] }
+            })))
+            .mount(&harness.mock)
+            .await;
+    }
+
+    harness.service.sync_account(&account.id).await.unwrap();
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND gmail_id IN ('p1','p2')",
+    )
+    .bind(&account.id)
+    .fetch_one(harness.core.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 2, "모든 history 페이지의 새 메일을 저장해야 한다");
 
     let refreshed = todo_gmail::store::fetch_account(harness.core.pool(), &account.id)
         .await

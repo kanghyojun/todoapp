@@ -128,78 +128,100 @@ impl GmailService {
     async fn incremental_sync(&self, account: &GmailAccount) -> Result<SyncSummary, Error> {
         let token = self.access_token(&account.email).await?;
         let start = account.history_id.as_deref().ok_or(Error::HistoryExpired)?;
-        let url = format!(
-            "{}/users/me/history?startHistoryId={}\
-             &historyTypes=messageAdded&historyTypes=messageDeleted\
-             &historyTypes=labelAdded&historyTypes=labelRemoved",
-            self.gmail_base, start,
-        );
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&token)
-            .send()
-            .await
-            .map_err(|_| Error::Remote {
-                message: "could not reach Gmail".to_owned(),
-                retryable: true,
-            })?;
-        let status = response.status();
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(Error::HistoryExpired);
-        }
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(Error::Unauthorized);
-        }
-        if !status.is_success() {
-            return Err(Error::Remote {
-                message: format!("Gmail history returned HTTP {status}"),
-                retryable: status.is_server_error()
-                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
-            });
-        }
-        let body: HistoryResponse = response.json().await.map_err(|_| Error::Remote {
-            message: "Gmail history returned an invalid response".to_owned(),
-            retryable: true,
-        })?;
         let pool = self.core.pool();
         let mut summary = SyncSummary::default();
-        for record in body.history {
-            for added in record.messages_added {
-                let meta = self.fetch_message_meta(&token, &added.message.id).await?;
-                store::upsert_message_meta(pool, &account.id, &meta).await?;
-                summary.fetched += 1;
-                summary.updated += 1;
+        let mut page_token: Option<String> = None;
+        // history 는 nextPageToken 으로 여러 페이지에 걸쳐 온다. 마지막 페이지까지
+        // 따라가야 밀린 변경분을 빠짐없이 반영한다. history_id 는 모든 페이지를
+        // 처리한 뒤(마지막 페이지)에만 저장해, 중간 실패 시 다음 sync 가 재시도한다.
+        loop {
+            let mut url = format!(
+                "{}/users/me/history?startHistoryId={}\
+                 &historyTypes=messageAdded&historyTypes=messageDeleted\
+                 &historyTypes=labelAdded&historyTypes=labelRemoved",
+                self.gmail_base, start,
+            );
+            if let Some(token) = &page_token {
+                url.push_str("&pageToken=");
+                url.push_str(&urlencode(token));
             }
-            for deleted in record.messages_deleted {
-                store::delete_message(pool, &account.id, &deleted.message.id).await?;
-                summary.updated += 1;
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|_| Error::Remote {
+                    message: "could not reach Gmail".to_owned(),
+                    retryable: true,
+                })?;
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(Error::HistoryExpired);
             }
-            for change in record.labels_added {
-                store::apply_label_change(
-                    pool,
-                    &account.id,
-                    &change.message.id,
-                    &change.label_ids,
-                    true,
-                )
-                .await?;
-                summary.updated += 1;
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(Error::Unauthorized);
             }
-            for change in record.labels_removed {
-                store::apply_label_change(
-                    pool,
-                    &account.id,
-                    &change.message.id,
-                    &change.label_ids,
-                    false,
-                )
-                .await?;
-                summary.updated += 1;
+            if !status.is_success() {
+                return Err(Error::Remote {
+                    message: format!("Gmail history returned HTTP {status}"),
+                    retryable: status.is_server_error()
+                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+                });
             }
-        }
-        if let Some(history_id) = body.history_id {
-            store::set_history_id(pool, &account.id, &history_id).await?;
+            let body: HistoryResponse = response.json().await.map_err(|_| Error::Remote {
+                message: "Gmail history returned an invalid response".to_owned(),
+                retryable: true,
+            })?;
+            for record in body.history {
+                for added in record.messages_added {
+                    match self.fetch_message_meta(&token, &added.message.id).await {
+                        Ok(meta) => {
+                            store::upsert_message_meta(pool, &account.id, &meta).await?;
+                            summary.fetched += 1;
+                            summary.updated += 1;
+                        }
+                        // 추가됐다 삭제된 메일. 건너뛰고 나머지를 계속 처리한다.
+                        Err(Error::MessageNotFound) => {}
+                        Err(other) => return Err(other),
+                    }
+                }
+                for deleted in record.messages_deleted {
+                    store::delete_message(pool, &account.id, &deleted.message.id).await?;
+                    summary.updated += 1;
+                }
+                for change in record.labels_added {
+                    store::apply_label_change(
+                        pool,
+                        &account.id,
+                        &change.message.id,
+                        &change.label_ids,
+                        true,
+                    )
+                    .await?;
+                    summary.updated += 1;
+                }
+                for change in record.labels_removed {
+                    store::apply_label_change(
+                        pool,
+                        &account.id,
+                        &change.message.id,
+                        &change.label_ids,
+                        false,
+                    )
+                    .await?;
+                    summary.updated += 1;
+                }
+            }
+            match body.next_page_token {
+                Some(next) => page_token = Some(next),
+                None => {
+                    if let Some(history_id) = body.history_id {
+                        store::set_history_id(pool, &account.id, &history_id).await?;
+                    }
+                    break;
+                }
+            }
         }
         self.emit();
         Ok(summary)
@@ -216,10 +238,16 @@ impl GmailService {
         let list: MessagesList = self.get_json(&token, &url).await?;
         let mut summary = SyncSummary::default();
         for (index, reference) in list.messages.iter().enumerate() {
-            let meta = self.fetch_message_meta(&token, &reference.id).await?;
-            store::upsert_message_meta(self.core.pool(), &account.id, &meta).await?;
-            summary.fetched += 1;
-            summary.updated += 1;
+            match self.fetch_message_meta(&token, &reference.id).await {
+                Ok(meta) => {
+                    store::upsert_message_meta(self.core.pool(), &account.id, &meta).await?;
+                    summary.fetched += 1;
+                    summary.updated += 1;
+                }
+                // 목록에 올랐지만 그 사이 삭제된 메일. 건너뛰고 계속 백필한다.
+                Err(Error::MessageNotFound) => {}
+                Err(other) => return Err(other),
+            }
             if index % 20 == 19 {
                 self.emit();
             }
@@ -522,6 +550,11 @@ impl GmailService {
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(Error::Unauthorized);
         }
+        // 추가됐다 삭제된 메일은 fetch 시 404 를 준다. 개별 실패로 다뤄
+        // sync 루프가 통째로 멈추지 않게 한다.
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(Error::MessageNotFound);
+        }
         if !status.is_success() {
             return Err(Error::Remote {
                 message: format!("Gmail returned HTTP {status}"),
@@ -628,6 +661,8 @@ struct HistoryResponse {
     history: Vec<HistoryRecord>,
     #[serde(default)]
     history_id: Option<String>,
+    #[serde(default)]
+    next_page_token: Option<String>,
 }
 
 #[derive(Deserialize)]
