@@ -5,7 +5,11 @@ mod mcp;
 mod rest;
 mod security;
 
-use std::{io, net::IpAddr, path::PathBuf};
+use std::{
+    io,
+    net::{IpAddr, Ipv4Addr},
+    path::PathBuf,
+};
 
 use axum::{
     Router,
@@ -134,6 +138,25 @@ pub async fn bind(bind: IpAddr, port: u16) -> Result<tokio::net::TcpListener, St
     }
 }
 
+/// 루프백은 반드시 연다(실패하면 에러). 추가 주소(예: Tailscale IP)가 루프백이
+/// 아니면 best-effort 로 함께 연다. 그 바인딩이 실패하면(예: Tailscale off) 경고만
+/// 남기고 루프백 리스너로 계속 굴린다. 로컬을 원격 상태에 묶지 않기 위해서다.
+pub async fn bind_local_and(
+    extra: IpAddr,
+    port: u16,
+) -> Result<Vec<tokio::net::TcpListener>, StartupError> {
+    let mut listeners = vec![bind(IpAddr::V4(Ipv4Addr::LOCALHOST), port).await?];
+    if !extra.is_loopback() {
+        match bind(extra, port).await {
+            Ok(listener) => listeners.push(listener),
+            Err(error) => {
+                eprintln!("todo: {extra}:{port} 바인딩 실패({error}), 루프백만 엽니다");
+            }
+        }
+    }
+    Ok(listeners)
+}
+
 pub async fn serve(listener: tokio::net::TcpListener, router: Router) -> Result<(), StartupError> {
     axum::serve(listener, router)
         .await
@@ -165,7 +188,7 @@ fn allowed_hosts_for(bind: IpAddr, port: u16) -> Vec<String> {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use super::allowed_hosts_for;
+    use super::{allowed_hosts_for, bind_local_and};
 
     #[test]
     fn loopback_bind_allows_only_local_hosts() {
@@ -180,5 +203,25 @@ mod tests {
         assert!(hosts.contains(&"127.0.0.1:2470".to_owned()));
         assert!(hosts.contains(&"localhost:2470".to_owned()));
         assert!(hosts.contains(&"100.92.89.75:2470".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn bind_local_and_opens_only_loopback_for_loopback_extra() {
+        let listeners = bind_local_and(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
+            .await
+            .expect("loopback must bind");
+        assert_eq!(listeners.len(), 1);
+        assert!(listeners[0].local_addr().expect("addr").ip().is_loopback());
+    }
+
+    #[tokio::test]
+    async fn bind_local_and_keeps_loopback_when_extra_is_unreachable() {
+        // 192.0.2.0/24 는 TEST-NET-1. 이 기기에 없으니 추가 바인딩은 실패한다.
+        let extra: IpAddr = "192.0.2.1".parse().expect("test-net address");
+        let listeners = bind_local_and(extra, 0)
+            .await
+            .expect("loopback still binds");
+        assert_eq!(listeners.len(), 1);
+        assert!(listeners[0].local_addr().expect("addr").ip().is_loopback());
     }
 }

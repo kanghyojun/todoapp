@@ -10,7 +10,7 @@ use clap::Parser;
 use todo_core::TodoCore;
 use todo_linear::{LinearService, SystemKeyStore};
 use todo_server::{
-    ServerConfig, StartupError, bind, build_router_with_linear, default_token_path,
+    ServerConfig, StartupError, bind_local_and, build_router_with_linear, default_token_path,
     load_or_create_token, serve,
 };
 
@@ -57,7 +57,7 @@ async fn run(args: Args) -> Result<(), StartupError> {
     let database_url = format!("sqlite://{}", database.display());
     let core = TodoCore::connect(&database_url).await?;
     let token = load_or_create_token(&default_token_path(&home))?;
-    let listener = bind(args.bind, args.port).await?;
+    let mut listeners = bind_local_and(args.bind, args.port).await?;
     let linear = LinearService::new(core.clone(), Arc::new(SystemKeyStore));
     let router = build_router_with_linear(
         core,
@@ -71,13 +71,22 @@ async fn run(args: Args) -> Result<(), StartupError> {
     )?;
     // 라우터를 만드는 일과 워커를 띄우는 일은 다르다. 호출자가 정한다.
     linear.spawn_worker();
-    let address = listener.local_addr().map_err(|source| StartupError::Bind {
-        bind: args.bind,
-        port: args.port,
-        source,
-    })?;
-    eprintln!("todo-server listening on http://{address}");
-    serve(listener, router).await
+    for listener in &listeners {
+        if let Ok(address) = listener.local_addr() {
+            eprintln!("todo-server listening on http://{address}");
+        }
+    }
+    // 루프백은 이 태스크에서, 추가 주소는 백그라운드에서 같은 라우터로 서빙한다.
+    let primary = listeners.remove(0);
+    for extra in listeners {
+        let router = router.clone();
+        tokio::spawn(async move {
+            if let Err(error) = serve(extra, router).await {
+                eprintln!("todo-server extra listener stopped: {error}");
+            }
+        });
+    }
+    serve(primary, router).await
 }
 
 fn expand_home(path: &Path, home: &Path) -> PathBuf {

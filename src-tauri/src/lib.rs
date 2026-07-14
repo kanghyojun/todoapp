@@ -20,7 +20,7 @@ use todo_gmail::{
 };
 use todo_linear::{Error as LinearError, LinearService, LinearStatus, PullSummary, SystemKeyStore};
 use todo_server::{
-    ServerConfig, StartupError, bind, build_router_with_linear, default_config_path,
+    ServerConfig, StartupError, bind_local_and, build_router_with_linear, default_config_path,
     default_token_path, load_or_create_token, read_bind_config, serve,
 };
 
@@ -680,18 +680,24 @@ async fn initialize(app: tauri::AppHandle) -> Result<ShellState, Box<dyn StdErro
         },
     )?;
 
-    let server_status = match bind(bind_addr, SERVER_PORT).await {
-        Ok(listener) => {
+    let server_status = match bind_local_and(bind_addr, SERVER_PORT).await {
+        Ok(listeners) => {
+            // 루프백은 항상, 추가 주소(Tailscale IP 등)는 열렸으면 함께 같은
+            // 라우터로 서빙한다. 어느 리스너가 죽든 상태를 failed 로 알린다.
             let status = SharedServerStatus::new(ServerStatus::running());
-            let task_status = status.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = serve(listener, router).await {
-                    eprintln!("todo external server stopped: {error}");
-                    let next = ServerStatus::failed(error.to_string());
-                    task_status.set(next.clone());
-                    let _ = app.emit(SERVER_STATUS_EVENT, next);
-                }
-            });
+            for listener in listeners {
+                let router = router.clone();
+                let task_status = status.clone();
+                let task_app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = serve(listener, router).await {
+                        eprintln!("todo external server stopped: {error}");
+                        let next = ServerStatus::failed(error.to_string());
+                        task_status.set(next.clone());
+                        let _ = task_app.emit(SERVER_STATUS_EVENT, next);
+                    }
+                });
+            }
             status
         }
         Err(error) => {
