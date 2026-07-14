@@ -25,6 +25,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "signingIdentity": "Apple Development: iam.kanghyojun@gmail.com (4FHRQ53BV9)"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
