@@ -1,4 +1,5 @@
-use chrono::{Datelike, Days, NaiveDate, Weekday};
+use chrono::{Datelike, Days, NaiveDate, TimeZone, Utc, Weekday};
+use chrono_english::{Dialect, parse_date_string};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -37,7 +38,8 @@ pub fn parse_due_date(
         "sun" => next_weekday(today, Weekday::Sun),
         value => parse_iso(value)
             .or_else(|| parse_relative(value, today))
-            .or_else(|| parse_month_day(value, today)),
+            .or_else(|| parse_month_day(value, today))
+            .or_else(|| parse_natural(value, today)),
     };
 
     parsed
@@ -83,4 +85,13 @@ fn parse_month_day(input: &str, today: NaiveDate) -> Option<NaiveDate> {
     } else {
         NaiveDate::from_ymd_opt(today.year().checked_add(1)?, month, day)
     }
+}
+
+/// 영어 자연어 표현("next monday", "in 2 weeks" 등)을 chrono-english 로 파싱한다.
+/// 주입받은 today 를 기준 시각(UTC 자정)으로 삼아 테스트 재현성을 지킨다.
+fn parse_natural(input: &str, today: NaiveDate) -> Option<NaiveDate> {
+    let now = Utc.from_utc_datetime(&today.and_hms_opt(0, 0, 0)?);
+    parse_date_string(input, now, Dialect::Us)
+        .ok()
+        .map(|dt| dt.date_naive())
 }

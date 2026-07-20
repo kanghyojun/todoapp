@@ -1,4 +1,4 @@
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate, Weekday};
 use todo_core::parse_due_date;
 
 fn date(year: i32, month: u32, day: u32) -> NaiveDate {
@@ -51,4 +51,29 @@ fn parses_supported_due_date_expressions_and_boundaries() {
         Some(date(2026, 4, 20))
     );
     assert!(parse_due_date("sometime-ish", friday).is_err());
+}
+
+#[test]
+fn parses_english_natural_language() {
+    let friday = date(2026, 7, 10);
+
+    // 원 요청: "next monday" 가 에러 대신 미래의 월요일로 파싱돼야 한다.
+    let next_monday = parse_due_date("next monday", friday)
+        .expect("next monday")
+        .expect("some date");
+    assert_eq!(next_monday.weekday(), Weekday::Mon);
+    assert!(next_monday > friday);
+
+    assert_eq!(
+        parse_due_date("3 days", friday).expect("3 days"),
+        Some(date(2026, 7, 13))
+    );
+    assert_eq!(
+        parse_due_date("2 weeks", friday).expect("2 weeks"),
+        Some(date(2026, 7, 24))
+    );
+    assert_eq!(
+        parse_due_date("2 days ago", friday).expect("2 days ago"),
+        Some(date(2026, 7, 8))
+    );
 }
