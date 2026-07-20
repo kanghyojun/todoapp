@@ -1,4 +1,4 @@
-use chrono::{Datelike, Days, NaiveDate, TimeZone, Utc, Weekday};
+use chrono::{Datelike, Days, Months, NaiveDate, TimeZone, Utc, Weekday};
 use chrono_english::{Dialect, parse_date_string};
 use thiserror::Error;
 
@@ -39,6 +39,7 @@ pub fn parse_due_date(
         value => parse_iso(value)
             .or_else(|| parse_relative(value, today))
             .or_else(|| parse_month_day(value, today))
+            .or_else(|| parse_korean(value, today))
             .or_else(|| parse_natural(value, today)),
     };
 
@@ -94,4 +95,110 @@ fn parse_natural(input: &str, today: NaiveDate) -> Option<NaiveDate> {
     parse_date_string(input, now, Dialect::Us)
         .ok()
         .map(|dt| dt.date_naive())
+}
+
+/// 한국어 상대 날짜 표현을 파싱한다. 어휘가 규칙적이라 직접 매핑한다.
+/// 지원: 오늘·내일·모레·글피, N일/주/달 뒤(후), 다음주·다다음주,
+/// (다음|다음주|다다음주|이번주) X요일, bare X요일.
+fn parse_korean(input: &str, today: NaiveDate) -> Option<NaiveDate> {
+    let trimmed = input.trim();
+    match trimmed {
+        "오늘" => return Some(today),
+        "내일" | "낼" => return checked_days_after(today, 1),
+        "모레" => return checked_days_after(today, 2),
+        "글피" => return checked_days_after(today, 3),
+        "다음주" | "담주" => return next_weekday(today, Weekday::Mon),
+        "다다음주" => {
+            return next_weekday(today, Weekday::Mon).and_then(|mon| checked_days_after(mon, 7));
+        }
+        _ => {}
+    }
+
+    let compact = trimmed.replace(' ', "");
+    parse_korean_relative(&compact, today)
+        .or_else(|| parse_korean_weekday_expr(&compact, today))
+}
+
+/// "3일 뒤", "2주후", "1주일 뒤", "3개월 뒤", "1달 뒤" 형태. 공백은 이미 제거돼 있다.
+fn parse_korean_relative(compact: &str, today: NaiveDate) -> Option<NaiveDate> {
+    let core = compact
+        .strip_suffix("후에")
+        .or_else(|| compact.strip_suffix("뒤에"))
+        .or_else(|| compact.strip_suffix("이후"))
+        .or_else(|| compact.strip_suffix("후"))
+        .or_else(|| compact.strip_suffix("뒤"))?;
+
+    if let Some(number) = core.strip_suffix("개월").or_else(|| core.strip_suffix("달")) {
+        let months = number.parse::<u32>().ok()?;
+        return today.checked_add_months(Months::new(months));
+    }
+
+    let (number, multiplier) = if let Some(number) = core.strip_suffix("주일") {
+        (number, 7_u64)
+    } else if let Some(number) = core.strip_suffix("주") {
+        (number, 7_u64)
+    } else if let Some(number) = core.strip_suffix("일") {
+        (number, 1_u64)
+    } else {
+        return None;
+    };
+    let amount = number.parse::<u64>().ok()?.checked_mul(multiplier)?;
+    checked_days_after(today, amount)
+}
+
+/// "(다음|다음주|다다음주|이번주) X요일" 또는 bare "X요일". 공백은 이미 제거돼 있다.
+fn parse_korean_weekday_expr(compact: &str, today: NaiveDate) -> Option<NaiveDate> {
+    if let Some(rest) = compact.strip_prefix("이번주").or_else(|| compact.strip_prefix("이번")) {
+        return this_week_weekday(today, parse_korean_weekday(rest)?);
+    }
+
+    let (weeks, rest) = if let Some(rest) = compact.strip_prefix("다다음주") {
+        (2_u64, rest)
+    } else if let Some(rest) = compact.strip_prefix("다음주") {
+        (1, rest)
+    } else if let Some(rest) = compact.strip_prefix("담주") {
+        (1, rest)
+    } else if let Some(rest) = compact.strip_prefix("다음") {
+        (0, rest)
+    } else {
+        (0, compact)
+    };
+
+    let weekday = parse_korean_weekday(rest)?;
+    if weeks == 0 {
+        // "다음 X요일" 과 bare "X요일" 은 모두 다음 발생일로 본다.
+        next_weekday(today, weekday)
+    } else {
+        let next_mon = next_weekday(today, Weekday::Mon)?;
+        let base_mon = checked_days_after(next_mon, (weeks - 1) * 7)?;
+        checked_days_after(base_mon, u64::from(weekday.num_days_from_monday()))
+    }
+}
+
+/// "월"·"월요일"·"월욜" 같은 요일 토큰 하나를 Weekday 로.
+fn parse_korean_weekday(token: &str) -> Option<Weekday> {
+    let mut chars = token.chars();
+    let weekday = match chars.next()? {
+        '월' => Weekday::Mon,
+        '화' => Weekday::Tue,
+        '수' => Weekday::Wed,
+        '목' => Weekday::Thu,
+        '금' => Weekday::Fri,
+        '토' => Weekday::Sat,
+        '일' => Weekday::Sun,
+        _ => return None,
+    };
+    let rest: String = chars.collect();
+    if rest.is_empty() || rest == "요일" || rest == "욜" {
+        Some(weekday)
+    } else {
+        None
+    }
+}
+
+/// 이번 주(월요일 시작)의 지정 요일. 이미 지난 요일이면 과거 날짜가 나올 수 있다.
+fn this_week_weekday(today: NaiveDate, weekday: Weekday) -> Option<NaiveDate> {
+    let from_monday = u64::from(today.weekday().num_days_from_monday());
+    let monday = today.checked_sub_days(Days::new(from_monday))?;
+    checked_days_after(monday, u64::from(weekday.num_days_from_monday()))
 }
