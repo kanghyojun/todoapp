@@ -110,10 +110,10 @@ const THEME_LABELS: Record<ThemePreference, string> = {
 // 인라인 입력창(due·link·linear_key·defer)의 라벨과 안내. 없는 모드는
 // 인라인 편집(create·edit)이나 검색이라 여기 안 들어온다.
 const ACTION_EDITOR: Partial<Record<InputMode, { label: string; placeholder: string }>> = {
-  due: { label: "마감일", placeholder: "tomorrow, fri, 3d, 또는 비움" },
+  due: { label: "마감일", placeholder: "내일, 다음주 월요일, 3d, 또는 비움" },
   link: { label: "Linear 이슈", placeholder: "PI-1234" },
   linear_key: { label: "Linear API key", placeholder: "lin_api_…" },
-  defer: { label: "보류까지", placeholder: "next week, 3d, 또는 비우면 계속 보류" },
+  defer: { label: "보류까지", placeholder: "3일 뒤, next monday, 또는 비우면 계속 보류" },
 };
 
 // 도움말은 보고 있는 탭에 맞춰 보여준다. 같은 키가 탭마다 뜻이 다르므로
