@@ -189,9 +189,54 @@ pub struct TodoFilter {
     pub status: Option<Status>,
     pub priority: Option<Priority>,
     pub due_before: Option<NaiveDate>,
+    /// 이 날짜보다 앞서 완료된 done 항목을 뺀다. done 이 아닌 항목과, 완료
+    /// 시각을 모르는 항목(completed_at 이 비어 있는 예전 데이터)은 그대로 둔다.
+    /// 오래된 완료 항목을 목록에서 치우는 데 쓴다.
+    pub completed_since: Option<NaiveDate>,
     pub query: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+}
+
+/// 목록 필터의 와이어 표현. REST 쿼리스트링과 Tauri 커맨드 인자가 같은 모양을
+/// 쓴다. 날짜는 문자열로 받아 여기서 한 번만 검사한다.
+///
+/// 경계마다 따로 두면 필드를 하나 늘릴 때 빠뜨리는 곳이 생긴다. MCP 요청만
+/// 이걸 안 쓰는데, 거기는 status·priority 를 문자열로 받고 schemars 설명이
+/// 붙어야 해서 모양이 다르다.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TodoFilterInput {
+    pub status: Option<Status>,
+    pub priority: Option<Priority>,
+    pub due_before: Option<String>,
+    pub completed_since: Option<String>,
+    pub q: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+impl TodoFilterInput {
+    pub fn into_filter(self) -> Result<TodoFilter, Error> {
+        Ok(TodoFilter {
+            status: self.status,
+            priority: self.priority,
+            due_before: parse_filter_date(self.due_before.as_deref())?,
+            completed_since: parse_filter_date(self.completed_since.as_deref())?,
+            query: self.q,
+            limit: self.limit,
+            offset: self.offset,
+        })
+    }
+}
+
+fn parse_filter_date(value: Option<&str>) -> Result<Option<NaiveDate>, Error> {
+    value
+        .map(|input| {
+            NaiveDate::parse_from_str(input, "%Y-%m-%d")
+                .map_err(|_| Error::InvalidInput("date must use YYYY-MM-DD format".to_owned()))
+        })
+        .transpose()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -2,7 +2,7 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use chrono::{Local, NaiveDate};
 use rmcp::schemars;
 use serde::{Deserialize, Deserializer};
-use todo_core::{CreateTodoInput, Priority, Status, TodoFilter, TodoPatch, parse_due_date};
+use todo_core::{CreateTodoInput, Priority, Status, TodoPatch, parse_due_date};
 
 use crate::error::ApiError;
 
@@ -50,30 +50,6 @@ impl UpdateTodoRequest {
             priority: self.priority,
             due_date: self.due_date,
         }
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ListQuery {
-    pub(crate) status: Option<Status>,
-    pub(crate) priority: Option<Priority>,
-    pub(crate) due_before: Option<String>,
-    pub(crate) q: Option<String>,
-    pub(crate) limit: Option<u32>,
-    pub(crate) offset: Option<u32>,
-}
-
-impl ListQuery {
-    pub(crate) fn into_core_filter(self) -> Result<TodoFilter, ApiError> {
-        Ok(TodoFilter {
-            status: self.status,
-            priority: self.priority,
-            due_before: self.due_before.as_deref().map(parse_iso_date).transpose()?,
-            query: self.q,
-            limit: self.limit,
-            offset: self.offset,
-        })
     }
 }
 
@@ -208,6 +184,10 @@ pub(crate) struct McpListRequest {
     pub(crate) priority: Option<String>,
     #[schemars(description = "Only return todos due before this YYYY-MM-DD date")]
     pub(crate) due_before: Option<String>,
+    #[schemars(
+        description = "Drop todos completed before this YYYY-MM-DD date. Todos that are not done, and done todos with no recorded completion time, are always kept."
+    )]
+    pub(crate) completed_since: Option<String>,
     #[schemars(description = "Optional full-text search query")]
     pub(crate) query: Option<String>,
     #[schemars(description = "Maximum number of todos to return")]

@@ -44,6 +44,7 @@ export interface Filter {
   status?: Status;
   priority?: Priority;
   due_before?: string;
+  completed_since?: string;
   q?: string;
   limit?: number;
   offset?: number;

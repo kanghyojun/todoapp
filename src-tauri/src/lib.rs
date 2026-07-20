@@ -7,12 +7,12 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use chrono::{Local, NaiveDate};
+use chrono::Local;
 use serde::{Deserialize, Deserializer, Serialize};
 use tauri::{Emitter, Manager, State};
 use todo_core::{
     CreateTodoInput, DomainEvent, EmailLinkInput, Error as CoreError, Priority, Status, Todo,
-    TodoCore, TodoFilter, TodoId, TodoPatch, parse_due_date,
+    TodoCore, TodoFilterInput, TodoId, TodoPatch, parse_due_date,
 };
 use todo_gmail::{
     Error as GmailError, GmailAccount, GmailService, MailBody, MailFilter, MailFolder,
@@ -24,6 +24,12 @@ use todo_server::{
     default_token_path, load_or_create_token, read_bind_config, serve,
 };
 
+// 릴리스 앱과 dev 인스턴스를 동시에 띄울 수 있게 REST/MCP 포트를 갈라 둔다.
+// 같은 포트면 나중에 뜬 쪽이 바인딩에 실패해 서버 없이 뜬다.
+// DB 는 일부러 공유한다. WAL + busy_timeout 으로 두 프로세스가 같이 쓴다.
+#[cfg(debug_assertions)]
+const SERVER_PORT: u16 = 2480;
+#[cfg(not(debug_assertions))]
 const SERVER_PORT: u16 = 2470;
 const CHANGED_EVENT: &str = "todo:changed";
 const MAIL_CHANGED_EVENT: &str = "mail:changed";
@@ -193,30 +199,6 @@ impl From<GmailError> for CommandError {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ListRequest {
-    status: Option<Status>,
-    priority: Option<Priority>,
-    due_before: Option<String>,
-    q: Option<String>,
-    limit: Option<u32>,
-    offset: Option<u32>,
-}
-
-impl ListRequest {
-    fn into_core(self) -> Result<TodoFilter, CommandError> {
-        Ok(TodoFilter {
-            status: self.status,
-            priority: self.priority,
-            due_before: self.due_before.as_deref().map(parse_iso_date).transpose()?,
-            query: self.q,
-            limit: self.limit,
-            offset: self.offset,
-        })
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct CreateRequest {
     title: String,
     #[serde(default)]
@@ -283,17 +265,12 @@ fn parse_todo_id(value: &str) -> Result<TodoId, CommandError> {
         .map_err(|_| CommandError::invalid_input("id must be a UUID"))
 }
 
-fn parse_iso_date(value: &str) -> Result<NaiveDate, CommandError> {
-    NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .map_err(|_| CommandError::invalid_input("date must use YYYY-MM-DD format"))
-}
-
 #[tauri::command]
 async fn list(
-    filter: ListRequest,
+    filter: TodoFilterInput,
     state: State<'_, ShellState>,
 ) -> Result<Vec<Todo>, CommandError> {
-    Ok(state.core.list_todos(filter.into_core()?).await?)
+    Ok(state.core.list_todos(filter.into_filter()?).await?)
 }
 
 #[tauri::command]
@@ -777,11 +754,80 @@ fn server_startup_message(error: &StartupError) -> String {
     }
 }
 
+/// on_navigation 이 내릴 수 있는 결정.
+#[derive(Debug, PartialEq, Eq)]
+enum NavigationChoice {
+    /// 창 안에서 그대로 연다.
+    Allow,
+    /// 이동은 막고 기본 브라우저로 넘긴다.
+    OpenExternally,
+    /// 이동만 막는다. opener 가 열 수 없는 스킴이다.
+    Block,
+}
+
+/// 창 안에서 열지, 브라우저로 넘길지, 그냥 막을지 고른다.
+///
+/// 주의: 이 핸들러는 최상위 이동만 받는 게 아니다. wry 의
+/// decidePolicyForNavigationAction 에 main frame 필터가 없어서
+/// (wry-0.55 src/wkwebview/navigation.rs) 메일 본문 iframe 이 자기 srcdoc 을
+/// 읽는 것까지 전부 여기로 올라온다. 그래서 about 을 막으면 본문이 통째로
+/// 안 뜨고 흰 화면만 남는다.
+fn decide_navigation(url: &tauri::Url) -> NavigationChoice {
+    match url.scheme() {
+        // 릴리스 앱이 자기 화면을 띄우는 커스텀 스킴.
+        "tauri" | "asset" | "ipc" => NavigationChoice::Allow,
+        // 메일 본문 iframe 의 srcdoc 이 about:srcdoc 으로 올라온다.
+        "about" | "blob" => NavigationChoice::Allow,
+        // dev 는 vite 개발 서버에서 화면을 받는다.
+        "http" | "https" if matches!(url.host_str(), Some("localhost" | "127.0.0.1")) => {
+            NavigationChoice::Allow
+        }
+        // opener 의 기본 권한이 http/https/mailto/tel 로 스킴을 제한한다.
+        "http" | "https" | "mailto" | "tel" => NavigationChoice::OpenExternally,
+        _ => NavigationChoice::Block,
+    }
+}
+
+/// 메일 본문 iframe 안의 링크를 외부 브라우저로 넘긴다.
+///
+/// 본문 iframe 은 sandbox 라 스크립트가 안 돈다. 안에서 바깥으로 신호를 보낼
+/// 방법이 없어서, allow-top-navigation-by-user-activation 과 base target="_top"
+/// 으로 클릭을 최상위 이동으로 올린 뒤 여기서 가로챈다.
+///
+/// 앱 자기 주소가 아니면 무조건 false 를 돌려 이동을 취소한다. 취소를 놓치면
+/// 앱 창이 메일 링크로 통째로 넘어가 UI 가 사라진다. 그래서 스킴을 가리기
+/// 전에 취소부터 확정한다.
+fn external_link_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("external-link")
+        .on_navigation(|window, url| match decide_navigation(url) {
+            NavigationChoice::Allow => true,
+            NavigationChoice::Block => false,
+            NavigationChoice::OpenExternally => {
+                use tauri_plugin_opener::OpenerExt;
+                if let Err(error) = window
+                    .app_handle()
+                    .opener()
+                    .open_url(url.as_str(), None::<&str>)
+                {
+                    eprintln!("todo: 외부 링크 열기 실패({url}): {error}");
+                }
+                false
+            }
+        })
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(external_link_plugin())
         .setup(|app| {
+            // 릴리스 앱과 나란히 떠 있을 때 어느 창이 dev 인지 제목으로 가른다.
+            #[cfg(debug_assertions)]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_title("todo (dev)");
+            }
             let state = tauri::async_runtime::block_on(initialize(app.handle().clone()))?;
             app.manage(state);
             Ok(())
@@ -815,4 +861,47 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run todo desktop app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NavigationChoice, decide_navigation};
+
+    fn choice(url: &str) -> NavigationChoice {
+        decide_navigation(&url.parse().expect("url"))
+    }
+
+    // 이게 Allow 가 아니면 메일 본문 iframe 이 자기 srcdoc 을 못 읽어
+    // 본문 자리가 흰 박스로 남는다.
+    #[test]
+    fn srcdoc_iframe_loads_in_place() {
+        assert_eq!(choice("about:srcdoc"), NavigationChoice::Allow);
+        assert_eq!(choice("about:blank"), NavigationChoice::Allow);
+    }
+
+    #[test]
+    fn app_screens_load_in_place() {
+        assert_eq!(choice("tauri://localhost"), NavigationChoice::Allow);
+        assert_eq!(choice("http://127.0.0.1:2471/"), NavigationChoice::Allow);
+        assert_eq!(choice("http://localhost:2471/"), NavigationChoice::Allow);
+    }
+
+    #[test]
+    fn mail_links_go_to_the_browser() {
+        assert_eq!(
+            choice("https://example.com/a"),
+            NavigationChoice::OpenExternally
+        );
+        assert_eq!(
+            choice("mailto:someone@example.com"),
+            NavigationChoice::OpenExternally
+        );
+    }
+
+    // opener 가 못 여는 스킴은 이동만 막는다.
+    #[test]
+    fn unknown_schemes_are_blocked() {
+        assert_eq!(choice("file:///etc/passwd"), NavigationChoice::Block);
+        assert_eq!(choice("javascript:alert(1)"), NavigationChoice::Block);
+    }
 }

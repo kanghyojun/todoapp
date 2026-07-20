@@ -42,12 +42,18 @@ impl TodoMcp {
             .as_deref()
             .map(parse_iso_date)
             .transpose()?;
+        let completed_since = request
+            .completed_since
+            .as_deref()
+            .map(parse_iso_date)
+            .transpose()?;
         Ok(self
             .core
             .list_todos(TodoFilter {
                 status,
                 priority,
                 due_before,
+                completed_since,
                 query: request.query,
                 limit: request.limit,
                 offset: None,

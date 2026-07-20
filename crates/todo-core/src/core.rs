@@ -148,6 +148,7 @@ impl TodoCore {
             status,
             priority,
             due_before,
+            completed_since,
             query: search,
             limit,
             offset,
@@ -219,6 +220,22 @@ impl TodoCore {
                 .push(column_prefix)
                 .push("due_date < ")
                 .push_bind(due_before.format("%Y-%m-%d").to_string());
+        }
+        // 오래 전에 끝낸 일을 목록에서 치운다. done 이 아닌 항목은 건드리지
+        // 않는다. completed_at 이 비어 있는 예전 데이터도 남긴다. 언제 끝났는지
+        // 모르는 것을 조용히 숨기면 사라진 것처럼 보인다.
+        // completed_at 은 RFC3339 라 date() 로 날짜만 떼어 비교한다.
+        if let Some(completed_since) = completed_since {
+            query
+                .push(" AND (")
+                .push(column_prefix)
+                .push("status != 'done' OR ")
+                .push(column_prefix)
+                .push("completed_at IS NULL OR date(")
+                .push(column_prefix)
+                .push("completed_at) >= ")
+                .push_bind(completed_since.format("%Y-%m-%d").to_string())
+                .push(")");
         }
         if search.is_some() {
             query.push(" ORDER BY bm25(todos_fts), t.created_at ASC, t.id ASC");

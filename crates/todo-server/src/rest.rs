@@ -8,13 +8,13 @@ use axum::{
     routing::{get, post},
 };
 use serde_json::{Value, json};
-use todo_core::{Todo, TodoCore};
+use todo_core::{Todo, TodoCore, TodoFilterInput};
 use todo_linear::{LinearService, LinearStatus, PendingChoice, PullSummary};
 
 use crate::{
     dto::{
         CreateTodoRequest, DeferRequest, LinearDoneStateRequest, LinearKeyRequest,
-        LinearLinkRequest, ListQuery, UpdateTodoRequest, parse_json, parse_query, resolve_ref,
+        LinearLinkRequest, UpdateTodoRequest, parse_json, parse_query, resolve_ref,
     },
     error::ApiError,
 };
@@ -54,12 +54,10 @@ async fn health() -> Json<Value> {
 
 async fn list_todos(
     State(state): State<AppState>,
-    query: Result<Query<ListQuery>, QueryRejection>,
+    query: Result<Query<TodoFilterInput>, QueryRejection>,
 ) -> Result<Json<Vec<Todo>>, ApiError> {
     let query = parse_query(query)?;
-    Ok(Json(
-        state.core.list_todos(query.into_core_filter()?).await?,
-    ))
+    Ok(Json(state.core.list_todos(query.into_filter()?).await?))
 }
 
 async fn create_todo(

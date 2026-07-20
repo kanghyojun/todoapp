@@ -10,6 +10,14 @@ import {
 } from "solid-js";
 import type { TodoClient } from "./client";
 import type { EmailRef, Filter, LinearStatus, Priority, Status, Todo } from "./domain";
+import { DrawerResizer, restoreDrawerWidths } from "./DrawerResizer";
+import {
+  COMPLETED_VISIBLE_DAYS,
+  completedSinceFor,
+  readShowOldCompleted,
+  saveShowOldCompleted,
+} from "./completed-visibility";
+import { MailBodyView } from "./mail/MailBodyView";
 import { MailView } from "./mail/MailView";
 import type { GmailClient } from "./mail/client";
 import type { MailBody, MailListItem } from "./mail/domain";
@@ -177,6 +185,9 @@ export const App: Component<AppProps> = (props) => {
   const [toast, setToast] = createSignal<string | null>(null);
   const [statusFilter, setStatusFilter] = createSignal<Status | undefined>();
   const [searchQuery, setSearchQuery] = createSignal("");
+  const [showOldCompleted, setShowOldCompleted] = createSignal(
+    readShowOldCompleted(localStorage),
+  );
   const [cursorIndex, setCursorIndex] = createSignal(0);
   const [selectedIds, setSelectedIds] = createSignal<string[]>([]);
   const [detailId, setDetailId] = createSignal<string | null>(null);
@@ -292,6 +303,7 @@ export const App: Component<AppProps> = (props) => {
     return {
       status: statusFilter(),
       q: searchQuery().trim() || undefined,
+      completed_since: completedSinceFor(showOldCompleted(), new Date()),
     };
   }
 
@@ -350,6 +362,24 @@ export const App: Component<AppProps> = (props) => {
     }
   }
 
+  // 오래된 완료 항목을 보일지 말지. 서버가 걸러 주므로 켜고 끌 때마다 다시
+  // 받아야 한다.
+  function toggleOldCompleted(): void {
+    const next = !showOldCompleted();
+    setShowOldCompleted(next);
+    saveShowOldCompleted(localStorage, next);
+    void load();
+  }
+
+  // 메일 본문의 링크는 앱 창이 아니라 기본 브라우저에서 연다. HTML 본문은
+  // iframe 이 최상위 이동으로 올린 걸 Rust 쪽에서 잡고, plain text 본문은
+  // linkify 가 만든 a 태그가 여기로 온다.
+  function openMailLink(url: string): void {
+    props.client.openExternal(url).catch((reason: unknown) => {
+      setError(messageFrom(reason));
+    });
+  }
+
   // 탭은 그대로 두고, todo 뷰 위에 메일 상세 드로어를 띄운다. 스냅샷으로
   // 헤더를 먼저 채우고 본문은 받아서 채운다. 열자마자 포커스를 줘서 j/k 로
   // 본문을 스크롤할 수 있게 한다.
@@ -382,7 +412,11 @@ export const App: Component<AppProps> = (props) => {
   // 한 번 훑어 상태별로 세면 '전체'는 세 개의 합이 된다.
   async function loadCounts(): Promise<void> {
     try {
-      const all = await props.client.list({});
+      // 목록과 같은 기준으로 센다. 숨긴 항목이 개수에만 잡히면 칩에는 40 인데
+      // 목록에는 3 개만 보이는 꼴이 된다.
+      const all = await props.client.list({
+        completed_since: completedSinceFor(showOldCompleted(), new Date()),
+      });
       const next = { todo: 0, in_progress: 0, done: 0 };
       for (const todo of all) {
         if (todo.status === "todo" || todo.status === "in_progress" || todo.status === "done") {
@@ -1006,6 +1040,8 @@ export const App: Component<AppProps> = (props) => {
   });
 
   onMount(() => {
+    // 드로어 폭은 CSS 변수라 첫 그림 전에 심어야 기본값에서 튀지 않는다.
+    restoreDrawerWidths();
     void load();
     void refreshLinearStatus();
     void refreshMailUnread();
@@ -1077,6 +1113,7 @@ export const App: Component<AppProps> = (props) => {
             client={client()}
             metaHeld={metaHeld()}
             onCreateTodo={createTodoFromEmail}
+            onOpenLink={openMailLink}
             onDetailOpenChange={setMailDetailOpen}
           />
         )}
@@ -1106,9 +1143,28 @@ export const App: Component<AppProps> = (props) => {
               </button>
             )}
           </For>
+          <div class="filter-row-end">
           <Show when={selectedIds().length > 0}>
             <span class="selection-count">{selectedIds().length} selected</span>
           </Show>
+          {/* 할 일·진행 중 탭에는 완료 항목이 애초에 없다. 거기서는 스위치를
+              눌러도 목록이 그대로라 있을 이유가 없다. */}
+          <Show when={statusFilter() === undefined || statusFilter() === "done"}>
+          <button
+            type="button"
+            class="old-completed-switch"
+            role="switch"
+            aria-checked={showOldCompleted()}
+            title={`완료된 지 ${COMPLETED_VISIBLE_DAYS}일이 지난 항목을 ${showOldCompleted() ? "숨깁니다" : "보여줍니다"}`}
+            onClick={toggleOldCompleted}
+          >
+            <span class="switch-track" aria-hidden="true">
+              <span class="switch-thumb" />
+            </span>
+            지난 완료
+          </button>
+          </Show>
+          </div>
         </div>
 
         <Show when={inputMode() === "search"}>
@@ -1292,6 +1348,7 @@ export const App: Component<AppProps> = (props) => {
         aria-labelledby="detail-heading"
         tabindex="-1"
       >
+        <DrawerResizer kind="todo" />
         <Show when={detailTodo()}>
           {(todo) => (
             <>
@@ -1380,6 +1437,7 @@ export const App: Component<AppProps> = (props) => {
         tabindex="-1"
         ref={(element) => (mailPreviewEl = element)}
       >
+        <DrawerResizer kind="mail" />
         <Show when={activeTab() === "todo" ? mailPreview() : undefined}>
           {(header) => (
             <>
@@ -1391,32 +1449,7 @@ export const App: Component<AppProps> = (props) => {
               <p class="mail-detail-from">
                 {header().from_name} &lt;{header().from_email}&gt;
               </p>
-              <div class="mail-body">
-                <Show
-                  when={mailPreviewBody()}
-                  fallback={<p class="mail-loading">본문을 불러오는 중…</p>}
-                >
-                  {(loaded) => (
-                    <Show
-                      when={loaded().body_text}
-                      fallback={
-                        <Show when={loaded().body_html} fallback={<p>본문이 없습니다.</p>}>
-                          {(html) => (
-                            <iframe
-                              class="mail-body-html"
-                              sandbox=""
-                              srcdoc={html()}
-                              title="메일 본문"
-                            />
-                          )}
-                        </Show>
-                      }
-                    >
-                      {(text) => <pre class="mail-body-text">{text()}</pre>}
-                    </Show>
-                  )}
-                </Show>
-              </div>
+              <MailBodyView body={mailPreviewBody()} onOpenLink={openMailLink} />
             </>
           )}
         </Show>

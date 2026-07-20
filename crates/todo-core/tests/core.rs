@@ -1352,3 +1352,104 @@ fn linear_link(issue_id: &str) -> LinearLinkInput {
         team_id: "team-1".to_owned(),
     }
 }
+
+// completed_at 을 임의 시각으로 되돌린다. 코어는 항상 "지금" 으로 적기 때문에
+// 오래 전에 끝낸 일은 이렇게 만들어야 한다.
+async fn backdate_completion(core: &TodoCore, id: todo_core::TodoId, days_ago: i64) {
+    let when = (chrono::Utc::now() - chrono::Duration::days(days_ago))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    sqlx::query("UPDATE todos SET completed_at = ? WHERE id = ?")
+        .bind(when)
+        .bind(id.to_string())
+        .execute(core.pool())
+        .await
+        .expect("backdate completion");
+}
+
+#[tokio::test]
+async fn completed_since_hides_only_old_done_todos() {
+    let (_database, core) = test_core().await;
+
+    let stale = core
+        .create_todo(CreateTodoInput::new("오래 전에 끝낸 일"))
+        .await
+        .expect("create stale");
+    let fresh = core
+        .create_todo(CreateTodoInput::new("어제 끝낸 일"))
+        .await
+        .expect("create fresh");
+    let open = core
+        .create_todo(CreateTodoInput::new("아직 하는 일"))
+        .await
+        .expect("create open");
+
+    for id in [stale.id, fresh.id] {
+        core.set_status(id, Status::Done).await.expect("mark done");
+    }
+    backdate_completion(&core, stale.id, 30).await;
+    backdate_completion(&core, fresh.id, 1).await;
+
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(7)).date_naive();
+    let visible = core
+        .list_todos(TodoFilter {
+            completed_since: Some(cutoff),
+            ..TodoFilter::default()
+        })
+        .await
+        .expect("list with cutoff");
+    let ids: Vec<_> = visible.iter().map(|todo| todo.id).collect();
+
+    assert!(!ids.contains(&stale.id), "30일 전 완료는 빠져야 한다");
+    assert!(ids.contains(&fresh.id), "어제 완료는 남아야 한다");
+    assert!(
+        ids.contains(&open.id),
+        "완료가 아닌 항목은 건드리면 안 된다"
+    );
+}
+
+#[tokio::test]
+async fn completed_since_is_off_when_unset() {
+    let (_database, core) = test_core().await;
+    let stale = core
+        .create_todo(CreateTodoInput::new("오래 전에 끝낸 일"))
+        .await
+        .expect("create stale");
+    core.set_status(stale.id, Status::Done)
+        .await
+        .expect("mark done");
+    backdate_completion(&core, stale.id, 90).await;
+
+    let visible = core
+        .list_todos(TodoFilter::default())
+        .await
+        .expect("list without cutoff");
+    assert!(visible.iter().any(|todo| todo.id == stale.id));
+}
+
+// 완료 시각을 모르는 예전 데이터를 조용히 숨기면 사라진 것처럼 보인다.
+#[tokio::test]
+async fn completed_since_keeps_done_todos_without_a_timestamp() {
+    let (_database, core) = test_core().await;
+    let todo = core
+        .create_todo(CreateTodoInput::new("완료 시각이 없는 일"))
+        .await
+        .expect("create todo");
+    core.set_status(todo.id, Status::Done)
+        .await
+        .expect("mark done");
+    sqlx::query("UPDATE todos SET completed_at = NULL WHERE id = ?")
+        .bind(todo.id.to_string())
+        .execute(core.pool())
+        .await
+        .expect("clear completion time");
+
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(7)).date_naive();
+    let visible = core
+        .list_todos(TodoFilter {
+            completed_since: Some(cutoff),
+            ..TodoFilter::default()
+        })
+        .await
+        .expect("list with cutoff");
+    assert!(visible.iter().any(|item| item.id == todo.id));
+}

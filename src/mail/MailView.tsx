@@ -10,6 +10,8 @@ import {
 } from "solid-js";
 import type { GmailClient } from "./client";
 import type { GmailAccount, MailBody, MailFolder, MailListItem } from "./domain";
+import { DrawerResizer } from "../DrawerResizer";
+import { MailBodyView } from "./MailBodyView";
 import { handleMailKey, type MailKeyAction } from "./keyboard-mail";
 
 interface MailViewProps {
@@ -17,6 +19,9 @@ interface MailViewProps {
   // App 이 관리하는 ⌘ 눌림 상태. 폴더 칩에 개수 대신 힌트를 보일 때 쓴다.
   metaHeld: boolean;
   onCreateTodo: (item: MailListItem) => Promise<void>;
+  // 본문 링크를 외부 브라우저로 넘긴다. GmailClient 에는 없는 기능이라
+  // App 이 쥔 TodoClient.openExternal 을 받아 쓴다.
+  onOpenLink: (url: string) => void;
   // 메일 상세가 열렸는지 App 에 알린다. App 이 할 일 상세를 옆으로 밀어
   // 두 드로어가 겹치지 않고 나란히 서게 한다.
   onDetailOpenChange?: (open: boolean) => void;
@@ -554,6 +559,7 @@ export const MailView: Component<MailViewProps> = (props) => {
         classList={{ open: openMessage() !== undefined }}
         aria-hidden={openMessage() === undefined}
       >
+        <DrawerResizer kind="mail" />
         <Show when={openMessage()}>
           {(item) => (
             <>
@@ -565,35 +571,7 @@ export const MailView: Component<MailViewProps> = (props) => {
               <p class="mail-detail-from">
                 {item().from_name} &lt;{item().from_email}&gt;
               </p>
-              <div class="mail-body">
-                <Show
-                  when={body()}
-                  fallback={<p class="mail-loading">본문을 불러오는 중…</p>}
-                >
-                  {(loaded) => (
-                    <Show
-                      when={loaded().body_text}
-                      fallback={
-                        <Show
-                          when={loaded().body_html}
-                          fallback={<p>본문이 없습니다.</p>}
-                        >
-                          {(html) => (
-                            <iframe
-                              class="mail-body-html"
-                              sandbox=""
-                              srcdoc={html()}
-                              title="메일 본문"
-                            />
-                          )}
-                        </Show>
-                      }
-                    >
-                      {(text) => <pre class="mail-body-text">{text()}</pre>}
-                    </Show>
-                  )}
-                </Show>
-              </div>
+              <MailBodyView body={body()} onOpenLink={props.onOpenLink} />
             </>
           )}
         </Show>

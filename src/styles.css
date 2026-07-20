@@ -202,10 +202,60 @@ kbd {
   color: var(--text-strong);
 }
 
-.selection-count {
+/* 상태 칩은 왼쪽, 보기 설정과 선택 개수는 오른쪽 끝에 모은다. */
+.filter-row-end {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
   margin-left: auto;
+}
+
+.selection-count {
   color: var(--accent);
   font-size: 12px;
+}
+
+/* 오래된 완료 항목 표시 스위치. 상태 필터가 아니라 보기 설정이라 칩과 같은
+   높이를 쓰되 따로 세운다. */
+.old-completed-switch {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.old-completed-switch[aria-checked="true"] {
+  border-color: var(--border-strong);
+  color: var(--text-strong);
+}
+
+.switch-track {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  background: var(--muted);
+  transition: transform 120ms ease-out, background 120ms ease-out;
+}
+
+.old-completed-switch[aria-checked="true"] .switch-thumb {
+  transform: translateX(12px);
+  background: var(--accent);
 }
 
 .error-banner {
@@ -397,7 +447,7 @@ button.todo-row { cursor: pointer; }
   top: 87px;
   right: 0;
   bottom: 0;
-  width: min(420px, 100vw);
+  width: min(var(--todo-detail-width, 420px), 100vw);
   padding: 22px;
   border-left: 1px solid var(--border);
   background: var(--bg-raised);
@@ -410,10 +460,43 @@ button.todo-row { cursor: pointer; }
   flex-direction: column;
 }
 
-/* 메일 상세(800px)가 열리면 할 일 상세를 그 폭만큼 왼쪽으로 밀어
-   두 드로어가 겹치지 않고 오른쪽에 나란히 서게 한다. */
+/* 메일 상세가 열리면 할 일 상세를 그 폭만큼 왼쪽으로 밀어 두 드로어가
+   겹치지 않고 오른쪽에 나란히 서게 한다. 같은 변수를 읽으므로 메일 드로어
+   폭을 끌어 바꿔도 밀리는 거리가 따라온다. */
 .detail-panel.shifted {
-  right: min(800px, 100vw);
+  right: min(var(--mail-detail-width, 800px), 100vw);
+}
+
+/* 드로어 왼쪽 가장자리의 드래그 손잡이. 테두리 위에 겹쳐 세운다. 보이는 선은
+   1px 이지만 집기 쉽게 잡히는 폭은 더 넓다. */
+.drawer-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 7px;
+  cursor: col-resize;
+  /* 패널 안쪽 내용보다 위에 있어야 잡힌다. */
+  z-index: 1;
+  touch-action: none;
+}
+
+.drawer-resizer:hover,
+.drawer-resizer:active {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+/* 끄는 동안 본문이 딸려 선택되면 드래그가 끊긴다. */
+body.drawer-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* 끄는 동안에는 폭 전환 애니메이션을 끈다. 안 그러면 손가락을 쫓아오지 못하고
+   미끄러진다. */
+body.drawer-resizing .detail-panel {
+  transition: none;
 }
 
 /* 헤더와 제목은 줄어들지 않는 고정 영역. */
@@ -805,9 +888,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
   white-space: nowrap;
 }
 
-/* 메일 본문은 넓게 봐야 읽힌다. todo 상세(420px)와 달리 메일 상세만 800px. */
+/* 메일 본문은 넓게 봐야 읽힌다. todo 상세와 기본값이 다르다. */
 .detail-panel.mail-detail {
-  width: min(800px, 100vw);
+  width: min(var(--mail-detail-width, 800px), 100vw);
 }
 
 .mail-detail-from {
@@ -815,8 +898,12 @@ dd { margin: 0; overflow-wrap: anywhere; }
   font-size: 0.85rem;
 }
 
+/* HTML 본문 iframe 이 남은 높이를 그대로 받아 자기 안에서만 스크롤하도록
+   패널의 남은 공간을 채운다. flex 를 안 주면 iframe 이 min-height 만큼만
+   서고 바깥에도 스크롤이 생겨 스크롤바가 두 개 겹친다. */
 .mail-body {
   margin-top: 0.75rem;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
 }
@@ -828,8 +915,19 @@ dd { margin: 0; overflow-wrap: anywhere; }
   margin: 0;
 }
 
+/* plain text 본문에서 linkify 가 뽑아낸 링크. pre 안이라 줄바꿈 규칙을
+   물려받고, 긴 URL 이 패널을 밀지 않게 끊는다. */
+.mail-body-link {
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-all;
+  cursor: pointer;
+}
+
 .mail-body-html {
+  display: block;
   width: 100%;
+  height: 100%;
   min-height: 24rem;
   border: none;
   background: #fff;
