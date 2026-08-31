@@ -332,10 +332,9 @@ export const App: Component<AppProps> = (props) => {
 
   async function load(filter: Filter = filterForCurrentView(), preferredId?: string): Promise<Todo[]> {
     try {
-      // 인자 filter 가 아니라 시그널 statusFilter() 를 읽는다. load() 를
-      // 부르기 전에 항상 시그널을 먼저 맞춰 둬야 한다(changeFilter 는
-      // setStatusFilter 를 먼저 하고, 팔레트 경로도 마찬가지다). 시그널과
-      // 다른 status 로 부르면 목록과 섹션 머리가 어긋난다.
+      // 인자 filter 가 아니라 시그널 statusFilter() 를 읽는다. filter 를
+      // 손수 넘기는 경로(팔레트)는 시그널을 먼저 맞춰 놓아야 한다.
+      // 시그널과 다른 status 로 부르면 목록과 섹션 머리가 어긋난다.
       const next = [...arrangeForView(statusFilter(), await props.client.list(filter))];
       installTodos(next, preferredId);
       setError(null);
@@ -497,7 +496,7 @@ export const App: Component<AppProps> = (props) => {
   function cancelInput(): void {
     if (inputMode() === "search") {
       setSearchQuery("");
-      void load({ status: serverStatusFor(statusFilter()) });
+      void load();
     }
     setInputMode("none");
     setInputValue("");
@@ -826,7 +825,7 @@ export const App: Component<AppProps> = (props) => {
     setStatusFilter(status);
     setSelectedIds([]);
     setCursorIndex(0);
-    void load({ status: serverStatusFor(status), q: searchQuery().trim() || undefined });
+    void load();
   }
 
   // 탭은 gmail 이 붙어 있을 때만 둘이다. 없으면 [ / ] 는 아무것도 안 바꾼다.
@@ -1187,10 +1186,7 @@ export const App: Component<AppProps> = (props) => {
               placeholder="title or description"
               onInput={(event) => {
                 setSearchQuery(event.currentTarget.value);
-                void load({
-                  status: serverStatusFor(statusFilter()),
-                  q: event.currentTarget.value.trim() || undefined,
-                });
+                void load();
               }}
             />
             <kbd>Esc</kbd>
