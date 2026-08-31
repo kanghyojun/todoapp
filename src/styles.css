@@ -273,6 +273,21 @@ kbd {
   background: var(--bg);
 }
 
+/* "지금" 뷰의 상태 섹션 머리. 행이 아니라 구분 표지라 클릭 대상이 아니다. */
+.section-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px 4px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.section-count {
+  font-variant-numeric: tabular-nums; /* .chip-count 와 같은 이유 */
+}
+
 .todo-row {
   display: grid;
   grid-template-columns: 22px minmax(180px, 1fr) 90px 105px 110px;

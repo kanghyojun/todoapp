@@ -1,4 +1,5 @@
-import type { Priority, Status } from "./domain";
+import type { Priority } from "./domain";
+import type { FilterView } from "./now-view";
 
 export type ShortcutScope = "global" | "todo" | "mail" | "palette" | "help";
 export type InputMode =
@@ -55,7 +56,7 @@ export type Action =
   | { type: "Delete"; ids: readonly string[] }
   | { type: "BeginLinearLink"; id: string }
   | { type: "OpenLink"; id: string }
-  | { type: "SetFilter"; status?: Status }
+  | { type: "SetFilter"; status?: FilterView }
   | { type: "SwitchTab"; direction: "prev" | "next" }
   | { type: "Undo" }
   | { type: "OpenPalette" }
@@ -163,17 +164,19 @@ export function handleKey(state: KeyboardState, event: KeyEvent): Action | null 
     return null;
   }
 
-  // 필터 전환은 ⌘/Ctrl + 숫자로만. 맨손 1~4 는 무시한다.
+  // 필터 전환은 ⌘/Ctrl + 숫자로만. 맨손 1~5 는 무시한다.
   // (칩에는 개수를 보여주고, ⌘ 를 눌렀을 때만 단축키 힌트를 띄운다.)
   if (event.metaKey === true || event.ctrlKey === true) {
     switch (event.key) {
       case "1":
-        return { type: "SetFilter", status: "todo" };
+        return { type: "SetFilter", status: "now" };
       case "2":
-        return { type: "SetFilter", status: "in_progress" };
+        return { type: "SetFilter", status: "todo" };
       case "3":
-        return { type: "SetFilter", status: "done" };
+        return { type: "SetFilter", status: "in_progress" };
       case "4":
+        return { type: "SetFilter", status: "done" };
+      case "5":
         return { type: "SetFilter" };
     }
   }

@@ -17,6 +17,7 @@ import {
   readShowOldCompleted,
   saveShowOldCompleted,
 } from "./completed-visibility";
+import { arrangeForView, sectionStatusAt, serverStatusFor, type FilterView } from "./now-view";
 import { MailBodyView } from "./mail/MailBodyView";
 import { MailView } from "./mail/MailView";
 import type { GmailClient } from "./mail/client";
@@ -125,7 +126,7 @@ const ACTION_EDITOR: Partial<Record<InputMode, { label: string; placeholder: str
 };
 
 // 도움말은 보고 있는 탭에 맞춰 보여준다. 같은 키가 탭마다 뜻이 다르므로
-// (t=마감일 vs 할 일로, u=되돌리기 vs 읽음, e=제목편집 vs 보관, ⌘1~3=필터 vs
+// (t=마감일 vs 할 일로, u=되돌리기 vs 읽음, e=제목편집 vs 보관, ⌘1~5=필터 vs
 // 폴더) 한데 섞지 않고 공통 + 현재 탭 섹션만 보인다.
 type ShortcutGroup = { title: string; items: readonly [string, string][] };
 
@@ -150,7 +151,7 @@ const TODO_SHORTCUTS: readonly [string, string][] = [
   ["x", "선택 토글"],
   ["Backspace", "삭제"],
   ["l / o", "Linear 연결 / 열기 (없으면 이메일)"],
-  ["⌘1 / ⌘2 / ⌘3 / ⌘4", "할 일 / 진행 중 / 완료 / 전체 필터"],
+  ["⌘1 / ⌘2 / ⌘3 / ⌘4 / ⌘5", "지금 / 할 일 / 진행 중 / 완료 / 전체 필터"],
   ["g", "보류 레인 펼치기·접기"],
   ["/", "검색"],
   ["u", "되돌리기"],
@@ -183,7 +184,9 @@ export const App: Component<AppProps> = (props) => {
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
   const [toast, setToast] = createSignal<string | null>(null);
-  const [statusFilter, setStatusFilter] = createSignal<Status | undefined>();
+  // 앱을 열면 미완료 모아보기("now")부터 보여준다. 저장하지 않으니
+  // 다음에 열어도 항상 여기서 시작한다.
+  const [statusFilter, setStatusFilter] = createSignal<FilterView | undefined>("now");
   const [searchQuery, setSearchQuery] = createSignal("");
   const [showOldCompleted, setShowOldCompleted] = createSignal(
     readShowOldCompleted(localStorage),
@@ -301,7 +304,7 @@ export const App: Component<AppProps> = (props) => {
 
   function filterForCurrentView(): Filter {
     return {
-      status: statusFilter(),
+      status: serverStatusFor(statusFilter()),
       q: searchQuery().trim() || undefined,
       completed_since: completedSinceFor(showOldCompleted(), new Date()),
     };
@@ -329,7 +332,11 @@ export const App: Component<AppProps> = (props) => {
 
   async function load(filter: Filter = filterForCurrentView(), preferredId?: string): Promise<Todo[]> {
     try {
-      const next = await props.client.list(filter);
+      // 인자 filter 가 아니라 시그널 statusFilter() 를 읽는다. load() 를
+      // 부르기 전에 항상 시그널을 먼저 맞춰 둬야 한다(changeFilter 는
+      // setStatusFilter 를 먼저 하고, 팔레트 경로도 마찬가지다). 시그널과
+      // 다른 status 로 부르면 목록과 섹션 머리가 어긋난다.
+      const next = [...arrangeForView(statusFilter(), await props.client.list(filter))];
       installTodos(next, preferredId);
       setError(null);
       void loadDeferred();
@@ -429,8 +436,9 @@ export const App: Component<AppProps> = (props) => {
     }
   }
 
-  function countFor(status?: Status): number {
+  function countFor(status?: FilterView): number {
     const counts = statusCounts();
+    if (status === "now") return counts.todo + counts.in_progress;
     if (status === "todo" || status === "in_progress" || status === "done") {
       return counts[status];
     }
@@ -489,7 +497,7 @@ export const App: Component<AppProps> = (props) => {
   function cancelInput(): void {
     if (inputMode() === "search") {
       setSearchQuery("");
-      void load({ status: statusFilter() });
+      void load({ status: serverStatusFor(statusFilter()) });
     }
     setInputMode("none");
     setInputValue("");
@@ -814,11 +822,11 @@ export const App: Component<AppProps> = (props) => {
     );
   }
 
-  function changeFilter(status?: Status): void {
+  function changeFilter(status?: FilterView): void {
     setStatusFilter(status);
     setSelectedIds([]);
     setCursorIndex(0);
-    void load({ status, q: searchQuery().trim() || undefined });
+    void load({ status: serverStatusFor(status), q: searchQuery().trim() || undefined });
   }
 
   // 탭은 gmail 이 붙어 있을 때만 둘이다. 없으면 [ / ] 는 아무것도 안 바꾼다.
@@ -1123,10 +1131,11 @@ export const App: Component<AppProps> = (props) => {
       <main class="todo-view">
         <div class="filter-row" aria-label="상태 필터">
           <For each={[
-            ["todo", "할 일", "1"],
-            ["in_progress", "진행 중", "2"],
-            ["done", "완료", "3"],
-            [undefined, "전체", "4"],
+            ["now", "지금", "1"],
+            ["todo", "할 일", "2"],
+            ["in_progress", "진행 중", "3"],
+            ["done", "완료", "4"],
+            [undefined, "전체", "5"],
           ] as const}>
             {([status, label, key]) => (
               <button
@@ -1147,8 +1156,9 @@ export const App: Component<AppProps> = (props) => {
           <Show when={selectedIds().length > 0}>
             <span class="selection-count">{selectedIds().length} selected</span>
           </Show>
-          {/* 할 일·진행 중 탭에는 완료 항목이 애초에 없다. 거기서는 스위치를
-              눌러도 목록이 그대로라 있을 이유가 없다. */}
+          {/* 할 일·진행 중·지금 탭에는 완료 항목이 애초에 없다("now" 도 done 을
+              뺀 미완료 모아보기다). 거기서는 스위치를 눌러도 목록이 그대로라
+              있을 이유가 없다. */}
           <Show when={statusFilter() === undefined || statusFilter() === "done"}>
           <button
             type="button"
@@ -1178,7 +1188,7 @@ export const App: Component<AppProps> = (props) => {
               onInput={(event) => {
                 setSearchQuery(event.currentTarget.value);
                 void load({
-                  status: statusFilter(),
+                  status: serverStatusFor(statusFilter()),
                   q: event.currentTarget.value.trim() || undefined,
                 });
               }}
@@ -1236,6 +1246,17 @@ export const App: Component<AppProps> = (props) => {
               <div role="listbox" aria-multiselectable="true">
                 <For each={todos()}>
                   {(todo, index) => (
+                    <>
+                    <Show when={sectionStatusAt(statusFilter(), todos(), index())}>
+                      {(status) => (
+                        <div class="section-header" role="presentation">
+                          {STATUS_LABELS[status()]}
+                          <span class="section-count">
+                            {todos().filter((item) => item.status === status()).length}
+                          </span>
+                        </div>
+                      )}
+                    </Show>
                     <Show
                       when={inputMode() === "edit" && inputTargets()[0] === todo.id}
                       fallback={
@@ -1287,6 +1308,7 @@ export const App: Component<AppProps> = (props) => {
                         <kbd>Enter</kbd>
                       </div>
                     </Show>
+                    </>
                   )}
                 </For>
               </div>

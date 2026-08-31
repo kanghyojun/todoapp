@@ -56,14 +56,15 @@ describe("스펙 6절 단축키 표의 모든 행", () => {
     expect(press("o")).toEqual({ type: "OpenLink", id: "b" });
   });
 
-  it("필터는 ⌘1/2/3/4 로만, 맨손 숫자는 무시", () => {
-    expect(press("1", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "todo" });
-    expect(press("2", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "in_progress" });
-    expect(press("3", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "done" });
-    expect(press("4", {}, { metaKey: true })).toEqual({ type: "SetFilter" });
-    expect(press("1", {}, { ctrlKey: true })).toEqual({ type: "SetFilter", status: "todo" });
+  it("필터는 ⌘1~5 로만, 맨손 숫자는 무시", () => {
+    expect(press("1", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "now" });
+    expect(press("2", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "todo" });
+    expect(press("3", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "in_progress" });
+    expect(press("4", {}, { metaKey: true })).toEqual({ type: "SetFilter", status: "done" });
+    expect(press("5", {}, { metaKey: true })).toEqual({ type: "SetFilter" });
+    expect(press("1", {}, { ctrlKey: true })).toEqual({ type: "SetFilter", status: "now" });
     expect(press("1")).toBeNull();
-    expect(press("4")).toBeNull();
+    expect(press("5")).toBeNull();
   });
 
   it("탭 전환 [ / ] 는 전역(mail 스코프에서도)", () => {
