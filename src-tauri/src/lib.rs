@@ -859,8 +859,26 @@ pub fn run() {
             gmail_set_credentials,
             gmail_add_account
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run todo desktop app");
+        // macOS 는 마지막 창을 닫아도 앱이 살아 있는 게 관례라, Cmd+W 를 종료 대신 숨기기로 돌린다.
+        .on_window_event(|_window, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = _event {
+                api.prevent_close();
+                let _ = _window.hide();
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("failed to run todo desktop app")
+        .run(|_app, _event| {
+            // Dock 아이콘을 다시 누르면 숨겨 둔 창을 되살린다.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                if let Some(window) = _app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
 
 #[cfg(test)]
