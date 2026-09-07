@@ -1,9 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- 아트워크(라운드 사각형+체크)를 824x824 로 중앙 배치. 가장자리 100px 는
-       투명 여백 — macOS 아이콘 그리드에 맞춰 Cmd+Tab/Dock 에서 다른 앱과
-       같은 크기로 보이게 한다. tauri icon 을 이 파일에서 다시 돌려도 여백 유지. -->
-  <g transform="translate(100,100) scale(1.609375)">
-    <rect width="512" height="512" rx="112" fill="#171715"/>
-    <path d="M142 263l72 72 156-168" fill="none" stroke="#f0efe8" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#073642"/>
+      <stop offset="1" stop-color="#002b36"/>
+    </linearGradient>
+    <linearGradient id="check" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#93a600"/>
+      <stop offset="1" stop-color="#b0bd00"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="22" flood-color="#000" flood-opacity=".25"/>
+    </filter>
+    <filter id="mark-shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000" flood-opacity=".28"/>
+    </filter>
+  </defs>
+
+  <!-- 100px transparent safe area keeps the icon optically aligned in the Dock. -->
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#tile)" filter="url(#shadow)"/>
+
+  <g fill="#fdf6e3" filter="url(#mark-shadow)">
+    <rect x="255" y="325" width="430" height="60" rx="30"/>
+    <rect x="255" y="451" width="330" height="60" rx="30"/>
+    <rect x="255" y="577" width="176" height="60" rx="30"/>
   </g>
+
+  <path d="M472 600l95 95 220-254" fill="none" stroke="url(#check)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round" filter="url(#mark-shadow)"/>
 </svg>
