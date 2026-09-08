@@ -83,17 +83,17 @@ claude mcp add --transport http todo http://127.0.0.1:2470/mcp \
 기본은 `127.0.0.1` 바인딩이라 같은 기기에서만 붙습니다. Tailscale로 연결된 리눅스 서버 같은 다른 기기에서 붙이려면 열 주소를 하나 더 지정합니다. 토큰과 같은 폴더의 `~/.config/todo/config.json`:
 
 ```json
-{ "bind": "100.92.89.75" }
+{ "bind": "100.64.0.1" }
 ```
 
 앱을 다시 켜면 `127.0.0.1`은 그대로 두고 그 주소를 **추가로** 엽니다. `<주소>:2470`이 Host 화이트리스트에도 자동으로 들어갑니다. 그래서 맥의 로컬 Claude 등록(`127.0.0.1`)은 안 바꿔도 되고, 리눅스만 그 주소로 붙으면 됩니다. Tailscale이 꺼지면 그 주소 바인딩만 조용히 실패하고 로컬은 그대로 뜹니다. 그다음 리눅스에서 등록합니다.
 
 ```bash
-claude mcp add --transport http todo http://100.92.89.75:2470/mcp \
+claude mcp add --transport http todo http://100.64.0.1:2470/mcp \
   --header "Authorization: Bearer <맥의 ~/.config/todo/token 값>"
 ```
 
-`todo-server` 바이너리는 `--bind 100.92.89.75` 플래그로 같은 일을 합니다. 바인드는 Tailscale IP처럼 특정 인터페이스로 좁히십시오. `0.0.0.0`은 LAN 전체에 노출됩니다.
+`todo-server` 바이너리는 `--bind 100.64.0.1` 플래그로 같은 일을 합니다. 바인드는 Tailscale IP처럼 특정 인터페이스로 좁히십시오. `0.0.0.0`은 LAN 전체에 노출됩니다.
 
 우선순위는 언제나 문자열입니다. `none`, `urgent`, `high`, `medium`, `low`. 마감일은 쓰기에서 자연어를 받습니다. `tomorrow`, `fri`, `3d`, `2026-04-20`, 그리고 빈 문자열은 지우기입니다.
 

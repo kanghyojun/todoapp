@@ -86,10 +86,10 @@ mod tests {
 
     #[test]
     fn valid_bind_is_used() {
-        let (_dir, path) = config_with(r#"{ "bind": "100.92.89.75" }"#);
+        let (_dir, path) = config_with(r#"{ "bind": "100.64.0.1" }"#);
         assert_eq!(
             read_bind_config(&path),
-            IpAddr::V4(Ipv4Addr::new(100, 92, 89, 75))
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))
         );
     }
 

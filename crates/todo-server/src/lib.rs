@@ -198,11 +198,11 @@ mod tests {
 
     #[test]
     fn non_loopback_bind_also_allows_its_own_host() {
-        let bind = IpAddr::V4(Ipv4Addr::new(100, 92, 89, 75));
+        let bind = IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1));
         let hosts = allowed_hosts_for(bind, 2470);
         assert!(hosts.contains(&"127.0.0.1:2470".to_owned()));
         assert!(hosts.contains(&"localhost:2470".to_owned()));
-        assert!(hosts.contains(&"100.92.89.75:2470".to_owned()));
+        assert!(hosts.contains(&"100.64.0.1:2470".to_owned()));
     }
 
     #[tokio::test]

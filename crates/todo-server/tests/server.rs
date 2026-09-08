@@ -221,14 +221,14 @@ async fn authentication_health_host_origin_and_cors_are_enforced() {
 
 #[tokio::test]
 async fn non_loopback_bind_admits_its_own_host_but_still_blocks_strangers() {
-    let bind = IpAddr::V4(Ipv4Addr::new(100, 92, 89, 75));
+    let bind = IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1));
     let server = TestServer::start_with_bind(bind, Vec::new()).await;
     let port = server
         .base_url
         .rsplit(':')
         .next()
         .expect("port in base url");
-    let tailnet_host = format!("100.92.89.75:{port}");
+    let tailnet_host = format!("100.64.0.1:{port}");
 
     // Tailscale IP 로 바인딩했으면 그 host 로 온 요청이 통과해야 한다.
     let admitted = server
